@@ -1,0 +1,2870 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.repomixignore
+components/tab_analytics.py
+components/tab_matrix.py
+components/tab_students.py
+data_manager.py
+database.py
+design.ui
+dialog_email_templates.ui
+dialog_mapping.ui
+dialog_progress_logic.ui
+main.py
+powertrack.db
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".repomixignore">
+# Ignore python cache files
+**/__pycache__/
+**/*.pyc
+
+# Ignore virtual environments
+venv/
+.venv/
+
+# Ignore local datasets
+data/
+
+# Ignore previous repomix outputs
+repomix-output.xml
+</file>
+
+<file path="components/tab_analytics.py">
+from PyQt5.QtWidgets import (QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QApplication)
+from PyQt5.QtCore import Qt, QSettings
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import numpy as np
+import os
+import glob
+from data_manager import safe_float
+import sqlite3
+from database import DB_PATH
+
+class TeamAnalyticsController:
+    """Controller linking UI Elements from design.ui to Analytics Logic"""
+    def __init__(self, team_name, table, scroll_area, btn_export, main_ui):
+        self.team_name = team_name
+        self.table = table
+        self.scroll_area = scroll_area
+        self.btn_export = btn_export
+        self.main_ui = main_ui
+        
+        self.analytics_data = {}
+        self.summary_data = {}
+        self.regions = []
+        self.categories = []
+
+        self.setup_ui_elements()
+        self.btn_export.clicked.connect(self.export_analytics)
+        
+        if self.team_name == "Summary":
+            self.main_ui.btn_save_snapshot.clicked.connect(self.save_month_snapshot)
+
+    def setup_ui_elements(self):
+        self.table.verticalHeader().setVisible(False) 
+        self.table.verticalHeader().setDefaultSectionSize(40) 
+        
+        fig_height = 15 if self.team_name == "Summary" else 12
+        self.figure = plt.figure(figsize=(11, fig_height))
+        self.figure.patch.set_facecolor('#121214')
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setStyleSheet("background-color: transparent;")
+        self.scroll_area.setWidget(self.canvas)
+
+    def auto_load_data(self):
+        if self.team_name == "Summary":
+            try:
+                self.load_snapshots_from_db()
+            except Exception as e:
+                print(f"Error loading Summary: {e}")
+                self.btn_export.setEnabled(False)
+            return
+
+        settings = QSettings("PowerIntegrations", "PowerTrack")
+        folder = settings.value("current_data_folder", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data"))
+        
+        pattern1 = os.path.join(folder, f"*Skilljar Metric*{self.team_name}*.csv")
+        pattern2 = os.path.join(folder, "**", f"*Skilljar Metric*{self.team_name}*.csv")
+        files = list(set(glob.glob(pattern1) + glob.glob(pattern2, recursive=True)))
+        
+        if files:
+            try:
+                self.parse_csv_for_analytics(files[0])
+                self.populate_table()
+                self.draw_charts()
+                self.btn_export.setEnabled(True)
+            except Exception as e:
+                print(f"Error loading {self.team_name}: {e}")
+                self.btn_export.setEnabled(False)
+        else:
+            self.btn_export.setEnabled(False)
+            self.table.clearContents()
+            self.figure.clear()
+            self.canvas.draw()
+
+    def load_snapshots_from_db(self):
+        self.summary_data.clear()
+        self.regions = ['Taiwan', 'China', 'Korea', 'Japan', 'US/Canada', 'Europe', 'ISEA', 'Worldwide']
+        
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='monthly_snapshots'")
+            if not cursor.fetchone():
+                self.btn_export.setEnabled(False)
+                self.table.clearContents()
+                self.table.setRowCount(0)
+                self.figure.clear()
+                self.canvas.draw()
+                return
+                
+            cursor.execute("SELECT month, team, published, taiwan, china, korea, japan, americas, europe, isea, worldwide FROM monthly_snapshots")
+            rows = cursor.fetchall()
+            
+            if not rows:
+                self.btn_export.setEnabled(False)
+                self.table.clearContents()
+                self.table.setRowCount(0)
+                self.figure.clear()
+                self.canvas.draw()
+                return
+
+            month_order = {"Jan":1, "Feb":2, "Mar":3, "Apr":4, "May":5, "Jun":6, "Jul":7, "Aug":8, "Sep":9, "Oct":10, "Nov":11, "Dec":12}
+            rows.sort(key=lambda x: month_order.get(x[0], 99))
+            
+            for row in rows:
+                month, team, pub, tw, cn, kr, jp, am, eu, isea, ww = row
+                if team not in self.summary_data:
+                    self.summary_data[team] = {"months": [], "published": [], "regions": {r: [] for r in self.regions}}
+                
+                self.summary_data[team]["months"].append(month)
+                self.summary_data[team]["published"].append(int(pub) if pub else 0)
+                
+                reg_vals = [tw, cn, kr, jp, am, eu, isea, ww]
+                for r_idx, r_name in enumerate(self.regions):
+                    self.summary_data[team]["regions"][r_name].append(reg_vals[r_idx] if reg_vals[r_idx] is not None else np.nan)
+        
+        self.populate_table()
+        self.draw_charts()
+        self.btn_export.setEnabled(True)
+
+    def save_month_snapshot(self):
+        month = self.main_ui.combo_snapshot_month.currentText()
+        if not month: return
+        
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT course_id, control_code, course_type FROM courses")
+                courses = cursor.fetchall()
+                course_map = {str(r[0]): r[1] for r in courses}
+                
+                fae_courses = [str(r[0]) for r in courses if r[2] in ('FAE', 'Both')]
+                sales_courses = [str(r[0]) for r in courses if r[2] in ('Sales', 'Both')]
+                both_courses = list(set(fae_courses + sales_courses))
+                
+                cursor.execute("SELECT user_id, organization, region_bucket, control_codes FROM students WHERE organization IN ('FAE', 'Sales')")
+                students = cursor.fetchall()
+                
+                cursor.execute("SELECT user_id, course_id, percent_complete FROM completions")
+                completions_map = {}
+                for uid, cid, pct in cursor.fetchall():
+                    uid_str = str(uid).strip()
+                    if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+                    if uid_str not in completions_map: completions_map[uid_str] = {}
+                    completions_map[uid_str][str(cid)] = safe_float(pct)
+                
+                teams_to_process = {
+                    "FAE": {"orgs": ["FAE"], "pub": len(fae_courses)},
+                    "Sales": {"orgs": ["Sales"], "pub": len(sales_courses)},
+                    "FAE+Sales": {"orgs": ["FAE", "Sales"], "pub": len(both_courses)}
+                }
+                
+                regions_db_map = {
+                    'Taiwan': 'Taiwan', 'China': 'China', 'Korea': 'Korea', 'Japan': 'Japan',
+                    'US/Canada': 'Americas', 'Europe': 'Europe', 'ISEA': 'ISEA', 'Worldwide': 'Worldwide'
+                }
+                
+                for team, t_info in teams_to_process.items():
+                    team_orgs = t_info["orgs"]
+                    pub_count = t_info["pub"]
+                    
+                    region_totals = {r: [] for r in regions_db_map.keys()}
+                    
+                    for st in students:
+                        user_id, org, region, control_codes = st
+                        if org not in team_orgs: continue
+                        
+                        uid_str = str(user_id).strip()
+                        if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+                        
+                        my_codes = [c.strip() for c in str(control_codes).split(',')] if control_codes and str(control_codes).lower() not in ['nan', 'n/a', 'none', ''] else []
+                        my_req_courses = [cid for cid, cc in course_map.items() if cc in my_codes]
+                        
+                        if my_req_courses:
+                            total_pct = sum(completions_map.get(uid_str, {}).get(cid, 0.0) for cid in my_req_courses)
+                            avg_pct = total_pct / len(my_req_courses)
+                            
+                            region_totals['Worldwide'].append(avg_pct)
+                            for out_reg, db_reg in regions_db_map.items():
+                                if out_reg != 'Worldwide' and region == db_reg:
+                                    region_totals[out_reg].append(avg_pct)
+                    
+                    reg_avgs = {}
+                    for r_name in regions_db_map.keys():
+                        if region_totals[r_name]:
+                            reg_avgs[r_name] = sum(region_totals[r_name]) / len(region_totals[r_name])
+                        else:
+                            reg_avgs[r_name] = None
+                            
+                    cursor.execute('''
+                        REPLACE INTO monthly_snapshots (month, team, published, taiwan, china, korea, japan, americas, europe, isea, worldwide)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        month, team, pub_count,
+                        reg_avgs['Taiwan'], reg_avgs['China'], reg_avgs['Korea'], reg_avgs['Japan'],
+                        reg_avgs['US/Canada'], reg_avgs['Europe'], reg_avgs['ISEA'], reg_avgs['Worldwide']
+                    ))
+            
+            self.load_snapshots_from_db()
+            QMessageBox.information(self.main_ui, "Snapshot Saved", f"Successfully saved analytics snapshot for {month}.")
+            
+        except Exception as e:
+            QMessageBox.critical(self.main_ui, "Error", f"Failed to save snapshot: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def parse_csv_for_analytics(self, filepath):
+        self.analytics_data.clear(); self.summary_data.clear(); self.regions.clear(); self.categories.clear()
+        
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            import csv
+            rows = list(csv.reader(f))
+
+        start_r, start_c = next(((r, c) for r, row in enumerate(rows) for c, cell in enumerate(row) if cell.strip() == "Category Team"), (-1, -1))
+        if start_r == -1: raise ValueError("Could not find 'Category Team' summary block.")
+        
+        self.regions = [x.strip() for x in rows[start_r][start_c+1 : start_c+9]]
+        valid_cats = ["InnoSwitch", "LinkSwitch", "LYTSwitch", "Other", "Motor Driver", "Automotive", "High Power", "All Course"]
+        
+        for r_idx in range(start_r + 1, min(start_r + 20, len(rows))):
+            cat = rows[r_idx][start_c].strip()
+            if cat in valid_cats:
+                self.categories.append(cat)
+                self.analytics_data[cat] = [safe_float(v) for v in rows[r_idx][start_c+1 : start_c+9]]
+
+    def populate_table(self):
+        self.table.setUpdatesEnabled(False)
+        self.table.clear()
+        
+        if self.team_name == "Summary":
+            headers = ["Team", "Month", "Published"] + self.regions
+            self.table.setColumnCount(len(headers))
+            self.table.setHorizontalHeaderLabels(headers)
+            
+            rows_data = []
+            for team in ["FAE", "Sales", "FAE+Sales"]:
+                data = self.summary_data.get(team)
+                if not data: continue
+                for m_idx, month in enumerate(data["months"]):
+                    pub = data["published"][m_idx]
+                    if pub > 0 or any(not np.isnan(data["regions"][r][m_idx]) for r in self.regions):
+                        row = [team, month, str(pub)] + [f"{data['regions'][r][m_idx]:.2f}%" if not np.isnan(data['regions'][r][m_idx]) else "-" for r in self.regions]
+                        rows_data.append(row)
+                        
+            self.table.setRowCount(len(rows_data))
+            for r_idx, row in enumerate(rows_data):
+                for c_idx, val in enumerate(row):
+                    item = QTableWidgetItem(val)
+                    item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                    if c_idx < 2: item.setFont(self.get_bold_font(item))
+                    if val == "-": item.setForeground(Qt.gray)
+                    self.table.setItem(r_idx, c_idx, item)
+        else:
+            headers = ["Category"] + self.regions
+            self.table.setColumnCount(len(headers))
+            self.table.setHorizontalHeaderLabels(headers)
+            self.table.setRowCount(len(self.categories))
+            
+            for r_idx, cat in enumerate(self.categories):
+                item_cat = QTableWidgetItem(cat)
+                item_cat.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                item_cat.setFont(self.get_bold_font(item_cat))
+                self.table.setItem(r_idx, 0, item_cat)
+                
+                for c_idx, val in enumerate(self.analytics_data[cat]):
+                    item_val = QTableWidgetItem(f"{val:.2f}%" if val > 0 else "0.00%")
+                    item_val.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                    if val == 0: item_val.setForeground(Qt.gray)
+                    self.table.setItem(r_idx, c_idx + 1, item_val)
+                
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setUpdatesEnabled(True)
+
+    def get_bold_font(self, item):
+        font = item.font()
+        font.setBold(True)
+        return font
+
+    def draw_charts(self):
+        self.figure.clear()
+        if self.team_name == "Summary":
+            if not self.summary_data: return
+            for i, team in enumerate(["FAE", "Sales", "FAE+Sales"]):
+                data = self.summary_data.get(team)
+                if not data or not data["months"]: continue
+                
+                ax1 = self.figure.add_subplot(3, 1, i+1); ax1.set_facecolor('#121214'); ax2 = ax1.twinx()
+                x = np.arange(len(data["months"]))
+                
+                bars = ax2.bar(x, data["published"], width=0.25, color='#B4C6E7', edgecolor='black', zorder=1)
+                bar_label_col = '#00B050' if team == 'FAE+Sales' else 'red'
+                for bar in bars:
+                    yval = bar.get_height()
+                    if yval > 0: ax2.text(bar.get_x() + bar.get_width()/2, yval + 2, str(int(yval)), ha='center', va='bottom', color=bar_label_col, fontweight='bold', fontsize=9)
+                
+                reg_colors = ['#ED7D31', '#FF0000', '#FFC000', '#5B9BD5', '#70AD47', '#264478', '#9E480E', '#7F7F7F']
+                for j, reg in enumerate(self.regions): 
+                    ax1.plot(x, data["regions"][reg], label=reg, color=reg_colors[j], marker='o', markersize=6, linewidth=2, zorder=3)
+                    
+                ax1.set_title(["FAE Team", "Sales Team", "Sales and FAE"][i], color='white', fontweight='bold', pad=10)
+                ax1.set_xticks(x); ax1.set_xticklabels(data["months"], color='white')
+                ax1.set_ylim(0, 120); ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0f}%'.format(y)))
+                ax1.set_ylabel("Course Completion Percentage", color='white'); ax1.tick_params(colors='white')
+                ax2.set_ylim(0, 100); ax2.set_ylabel("Course Published", color=bar_label_col, fontweight='bold'); ax2.tick_params(axis='y', colors=bar_label_col)
+                ax1.grid(True, axis='both', linestyle='-', color='#3a3a40', alpha=0.7)
+                
+                if i == 0:
+                    bar_patch = mpatches.Patch(color='#B4C6E7', ec='black', label='Published\nCourse')
+                    handles, labels = ax1.get_legend_handles_labels()
+                    ax1.legend(handles=[bar_patch] + handles, labels=[bar_patch.get_label()] + labels, loc='center left', bbox_to_anchor=(1.08, 0.5), frameon=False, labelcolor='white')
+        else:
+            if not self.categories: return
+            chart_cats = [c for c in self.categories if c != "All Course"]
+            regions_no_ww, ww_idx = self.regions[:-1], self.regions.index("Worldwide")
+            
+            ax1 = self.figure.add_subplot(211); ax1.set_facecolor('#121214'); ax1.grid(axis='y', linestyle='-', color='#3a3a40', alpha=0.7, zorder=0)
+            x, width, reg_colors = np.arange(len(chart_cats)), 0.11, ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#00B050', '#264478']
+            
+            for i, reg in enumerate(regions_no_ww): ax1.bar(x + (width * i), [self.analytics_data[cat][i] for cat in chart_cats], width, label=reg, color=reg_colors[i % len(reg_colors)], edgecolor='black', zorder=3)
+            ww_vals = [self.analytics_data[cat][ww_idx] for cat in chart_cats]
+            line_x = x + width * ((len(regions_no_ww) - 1) / 2)
+            ax1.plot(line_x, ww_vals, color='#C65911', marker='o', linewidth=2, label='Worldwide', zorder=4)
+            for i, val in enumerate(ww_vals): ax1.text(line_x[i], val + 3, f"{val:.1f}%", ha='center', va='bottom', color='white', fontweight='bold', fontsize=9)
+
+            ax1.set_title(f"{self.team_name} Team", fontsize=12, fontweight='bold', color='white', pad=15)
+            ax1.set_ylabel("Course Completion", color='white', fontweight='bold'); ax1.set_xticks(line_x); ax1.set_xticklabels(chart_cats)
+            ax1.set_ylim(0, 105); ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0f}%'.format(y))); ax1.tick_params(colors='white')
+            ax1.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor='white')
+
+            ax2 = self.figure.add_subplot(212); ax2.set_facecolor('#121214'); ax2.grid(axis='y', linestyle='-', color='#3a3a40', alpha=0.7, zorder=0)
+            x2, width2, cat_colors = np.arange(len(self.regions)), 0.12, ['#00B050', '#7030A0', '#C65911', '#7F7F7F', '#4472C4', '#548235', '#000000']
+            for i, cat in enumerate(chart_cats): ax2.bar(x2 + (width2 * i), self.analytics_data[cat], width2, label=cat, color=cat_colors[i % len(cat_colors)], edgecolor='black', zorder=3)
+
+            center_x2 = x2 + width2 * ((len(chart_cats) - 1) / 2)
+            ax2.set_title(f"{self.team_name} Team", fontsize=12, fontweight='bold', color='white', pad=15)
+            ax2.set_ylabel("Course Completion", color='white', fontweight='bold'); ax2.set_xticks(center_x2); ax2.set_xticklabels(self.regions)
+            ax2.set_ylim(0, 105); ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0f}%'.format(y))); ax2.tick_params(colors='white')
+            ax2.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor='white')
+
+        self.figure.tight_layout(rect=[0, 0, 0.88, 1])
+        self.canvas.draw()
+        
+    def export_analytics(self):
+        if self.team_name == "Summary":
+            path, _ = QFileDialog.getSaveFileName(self.main_ui, "Export Analytics History", "Analytics_History_Export.xlsx", "Excel Files (*.xlsx)")
+            if not path: return
+            try:
+                data = []
+                for team in ["FAE", "Sales", "FAE+Sales"]:
+                    info = self.summary_data.get(team)
+                    if not info: continue
+                    for i, month in enumerate(info["months"]):
+                        row = {"Team": team, "Month": month, "Published Courses": info["published"][i]}
+                        for r_name in self.regions:
+                            val = info["regions"][r_name][i]
+                            row[r_name] = f"{val:.2f}%" if not np.isnan(val) else "N/A"
+                        data.append(row)
+                df = pd.DataFrame(data)
+                df.to_excel(path, index=False)
+                QMessageBox.information(self.main_ui, "Export Successful", f"History exported successfully to:\n{path}")
+            except Exception as e:
+                QMessageBox.critical(self.main_ui, "Export Error", f"Failed to export history:\n{e}")
+        else:
+            path, _ = QFileDialog.getSaveFileName(self.main_ui, "Export Analytics", f"{self.team_name}_Analytics_Export.xlsx", "Excel Files (*.xlsx)")
+            if not path: return
+            
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                import io
+                
+                chart_cats = [c for c in self.categories if c != "All Course"]
+                export_cats = chart_cats + (["All Course"] if "All Course" in self.categories else [])
+                
+                # 1. Export the Data
+                data = []
+                for cat in export_cats:
+                    row = {"Category": cat}
+                    for i, r_name in enumerate(self.regions):
+                        row[r_name] = self.analytics_data[cat][i] / 100.0
+                    data.append(row)
+                df = pd.DataFrame(data)
+                
+                try:
+                    writer = pd.ExcelWriter(path, engine='xlsxwriter')
+                    df.to_excel(writer, sheet_name='Analytics', index=False)
+                    worksheet = writer.sheets['Analytics']
+                    
+                    pct_format = writer.book.add_format({'num_format': '0.00%'})
+                    worksheet.set_column(1, len(self.regions), 12, pct_format)
+                    worksheet.set_column(0, 0, 20)
+                    
+                    # --- EXCEL NATIVE STYLE VARIABLES ---
+                    text_col = '#595959'
+                    grid_col = '#d9d9d9'
+                    regions_no_ww, ww_idx = self.regions[:-1], self.regions.index("Worldwide")
+
+                    # ==========================================
+                    # CHART 1: Regions as Bars, Worldwide as Line
+                    # ==========================================
+                    fig1, ax1 = plt.subplots(figsize=(14, 6))
+                    fig1.patch.set_facecolor('white')
+                    fig1.patch.set_edgecolor(grid_col)
+                    fig1.patch.set_linewidth(1)
+                    ax1.set_facecolor('white')
+                    
+                    # Excel-style grid and borders
+                    ax1.grid(axis='y', linestyle='-', color=grid_col, linewidth=0.7, zorder=0)
+                    ax1.spines['top'].set_visible(False)
+                    ax1.spines['right'].set_visible(False)
+                    ax1.spines['left'].set_color(grid_col)
+                    ax1.spines['bottom'].set_color(grid_col)
+                    
+                    # Bar Spacing Logic
+                    x, step, bar_width = np.arange(len(chart_cats)), 0.115, 0.09
+                    reg_colors = ['#4472C4', '#ED7D31', '#A5A5A5', '#FFC000', '#5B9BD5', '#00B050', '#264478']
+                    
+                    for i, reg in enumerate(regions_no_ww):
+                        ax1.bar(x + (step * i), [self.analytics_data[cat][i] for cat in chart_cats], 
+                                width=bar_width, label=reg, color=reg_colors[i % len(reg_colors)], 
+                                edgecolor='black', linewidth=0.5, zorder=3)
+                        
+                    ww_vals = [self.analytics_data[cat][ww_idx] for cat in chart_cats]
+                    line_x = x + (step * (len(regions_no_ww) - 1) / 2)
+                    ax1.plot(line_x, ww_vals, color='#C65911', marker='o', markersize=5, linewidth=2, label='Worldwide', zorder=4)
+                    for i, val in enumerate(ww_vals): 
+                        ax1.text(line_x[i], val + 3, f"{val:.1f}%", ha='center', va='bottom', color=text_col, fontsize=9)
+            
+                    ax1.set_title(f"{self.team_name} Team", fontsize=12, color=text_col, pad=15)
+                    ax1.set_ylabel("Course Completion", color=text_col, fontweight='bold', fontsize=10)
+                    ax1.set_xlabel("Course Category", color=text_col, fontweight='bold', fontsize=10, labelpad=10)
+                    ax1.set_xticks(line_x)
+                    ax1.set_xticklabels(chart_cats, color=text_col, fontsize=9)
+                    ax1.set_ylim(0, 105)
+                    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0f}%'.format(y)))
+                    ax1.tick_params(colors=text_col, labelsize=9)
+                    
+                    # Square Legends
+                    ax1.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor=text_col, 
+                               handlelength=1, handleheight=1, fontsize=9)
+            
+                    fig1.tight_layout(rect=[0, 0, 0.9, 1])
+                    
+                    # Save Chart 1 to Memory
+                    img_data1 = io.BytesIO()
+                    fig1.savefig(img_data1, format='png', dpi=100, bbox_inches='tight', facecolor='white', edgecolor=fig1.get_edgecolor())
+                    img_data1.seek(0)
+                    plt.close(fig1)
+
+                    # ==========================================
+                    # CHART 2: Transposed - Categories as Bars
+                    # ==========================================
+                    fig2, ax2 = plt.subplots(figsize=(14, 6))
+                    fig2.patch.set_facecolor('white')
+                    fig2.patch.set_edgecolor(grid_col)
+                    fig2.patch.set_linewidth(1)
+                    ax2.set_facecolor('white')
+                    
+                    ax2.grid(axis='y', linestyle='-', color=grid_col, linewidth=0.7, zorder=0)
+                    ax2.spines['top'].set_visible(False)
+                    ax2.spines['right'].set_visible(False)
+                    ax2.spines['left'].set_color(grid_col)
+                    ax2.spines['bottom'].set_color(grid_col)
+                    
+                    x2, step2, bar_width2 = np.arange(len(self.regions)), 0.115, 0.09
+                    cat_colors = ['#00B050', '#7030A0', '#C65911', '#7F7F7F', '#4472C4', '#548235', '#000000']
+                    
+                    for i, cat in enumerate(chart_cats): 
+                        ax2.bar(x2 + (step2 * i), self.analytics_data[cat], 
+                                width=bar_width2, label=cat, color=cat_colors[i % len(cat_colors)], 
+                                edgecolor='black', linewidth=0.5, zorder=3)
+            
+                    center_x2 = x2 + (step2 * (len(chart_cats) - 1) / 2)
+                    ax2.set_title(f"{self.team_name} Team", fontsize=12, color=text_col, pad=15)
+                    ax2.set_ylabel("Course Completion", color=text_col, fontweight='bold', fontsize=10)
+                    ax2.set_xlabel("Region", color=text_col, fontweight='bold', fontsize=10, labelpad=10)
+                    ax2.set_xticks(center_x2)
+                    ax2.set_xticklabels(self.regions, color=text_col, fontsize=9)
+                    ax2.set_ylim(0, 105)
+                    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0f}%'.format(y)))
+                    ax2.tick_params(colors=text_col, labelsize=9)
+                    
+                    ax2.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), frameon=False, labelcolor=text_col, 
+                               handlelength=1, handleheight=1, fontsize=9)
+            
+                    fig2.tight_layout(rect=[0, 0, 0.9, 1])
+                    
+                    # Save Chart 2 to Memory
+                    img_data2 = io.BytesIO()
+                    fig2.savefig(img_data2, format='png', dpi=100, bbox_inches='tight', facecolor='white', edgecolor=fig2.get_edgecolor())
+                    img_data2.seek(0)
+                    plt.close(fig2)
+                    
+                    # 3. Paste Both Images into Excel
+                    worksheet.insert_image(f'A{len(export_cats) + 4}', 'chart1.png', {'image_data': img_data1})
+                    # Add space between charts. Row 36 gives plenty of padding below the first chart.
+                    worksheet.insert_image(f'A{len(export_cats) + 36}', 'chart2.png', {'image_data': img_data2})
+                    
+                    writer.close()
+                    
+                except ImportError:
+                    df.to_excel(path, index=False)
+                    
+                QMessageBox.information(self.main_ui, "Export Successful", f"{self.team_name} Analytics exported successfully to:\n{path}")
+                
+            except Exception as e:
+                QMessageBox.critical(self.main_ui, "Export Error", f"Failed to export analytics:\n{e}")
+            finally:
+                QApplication.restoreOverrideCursor()
+
+
+class AnalyticsTabComponent:
+    def __init__(self, ui_window):
+        self.ui = ui_window
+        plt.style.use('dark_background')
+        
+        self.controllers = {
+            "FAE": TeamAnalyticsController("FAE", self.ui.table_fae, self.ui.scroll_fae, self.ui.btn_export_fae, self.ui),
+            "Sales": TeamAnalyticsController("Sales", self.ui.table_sales, self.ui.scroll_sales, self.ui.btn_export_sales, self.ui),
+            "Summary": TeamAnalyticsController("Summary", self.ui.table_summary, self.ui.scroll_summary, self.ui.btn_export_summary, self.ui)
+        }
+
+    def update_data(self):
+        for controller in self.controllers.values():
+            controller.auto_load_data()
+</file>
+
+<file path="components/tab_matrix.py">
+from PyQt5.QtWidgets import (QTableWidgetItem, QApplication, QDialog, QCheckBox, 
+                             QMessageBox, QTableWidget, QFileDialog, QMenu, QWidgetAction, QTreeWidgetItem)
+from PyQt5.QtGui import QColor, QBrush
+from PyQt5.QtCore import Qt
+from PyQt5 import uic
+import sqlite3
+import pandas as pd
+from database import DB_PATH
+from data_manager import safe_float
+import os
+
+class CourseMappingDialog(QDialog):
+    def __init__(self, current_org_filter, parent=None):
+        super().__init__(parent)
+        ui_path = os.path.join(os.path.dirname(__file__), "..", "dialog_mapping.ui")
+        uic.loadUi(ui_path, self)
+        
+        self.course_filter = current_org_filter 
+        self.courses_deleted = False 
+        self.setWindowTitle(f"Map Courses to Control Codes ({self.course_filter} View)")
+        
+        self.tree_categories.dropEvent = self.tree_drop_event
+        self.list_unassigned.dropEvent = self.list_drop_event
+        
+        self.btn_save.clicked.connect(self.save_mapping)
+        self.btn_delete_course.clicked.connect(self.delete_selected_courses)
+        
+        self.setup_tree_structure()
+        self.load_data()
+
+    def tree_drop_event(self, event):
+        source = event.source()
+        target_item = self.tree_categories.itemAt(event.pos())
+        
+        if not target_item or target_item.parent() is None:
+            event.ignore()
+            return
+            
+        if target_item.parent().parent() is not None:
+            target_item = target_item.parent()
+
+        if source == self.tree_categories:
+            for item in self.tree_categories.selectedItems():
+                if item.parent() and item.parent().parent():
+                    item.parent().takeChild(item.parent().indexOfChild(item))
+                    target_item.addChild(item)
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+            
+        elif source == self.list_unassigned:
+            for item in source.selectedItems():
+                new_item = QTreeWidgetItem([item.text()])
+                new_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+                target_item.addChild(new_item)
+                source.takeItem(source.row(item)) 
+            target_item.setExpanded(True)
+            event.setDropAction(Qt.CopyAction) 
+            event.accept()
+        else:
+            event.ignore()
+
+    def list_drop_event(self, event):
+        source = event.source()
+        if source == self.list_unassigned:
+            event.accept() 
+        elif source == self.tree_categories:
+            for item in source.selectedItems():
+                if item.parent() is not None and item.parent().parent() is not None:
+                    self.list_unassigned.addItem(item.text(0))
+                    item.parent().takeChild(item.parent().indexOfChild(item)) 
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def setup_tree_structure(self):
+        structure = {"Low & Mid Power": ["InnoSwitch", "LinkSwitch", "LYTSwitch", "Other"], "High Power": ["High Power"], "Automotive": ["Automotive"], "Motor Driver": ["Motor Driver"]}
+        for control_code, categories in structure.items():
+            cc_node = QTreeWidgetItem(self.tree_categories, [control_code])
+            cc_node.setFlags(Qt.ItemIsEnabled) 
+            for cat in categories:
+                cat_node = QTreeWidgetItem(cc_node, [cat])
+                cat_node.setFlags(Qt.ItemIsEnabled | Qt.ItemIsDropEnabled) 
+        self.tree_categories.expandAll()
+
+    def load_data(self):
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            query = "SELECT course_id, course_name, control_code, graph_category FROM courses"
+            if self.course_filter == "FAE": query += " WHERE course_type IN ('FAE', 'Both')"
+            elif self.course_filter == "Sales": query += " WHERE course_type IN ('Sales', 'Both')"
+                
+            cursor.execute(query)
+            for cid, cname, cc, gc in cursor.fetchall():
+                item_text = f"{cname} [{cid}]"
+                if cc == 'Unassigned' or gc == 'Unassigned': self.list_unassigned.addItem(item_text)
+                else:
+                    for i in range(self.tree_categories.topLevelItemCount()):
+                        parent = self.tree_categories.topLevelItem(i)
+                        if parent.text(0) == cc:
+                            for j in range(parent.childCount()):
+                                child = parent.child(j)
+                                if child.text(0) == gc:
+                                    course_node = QTreeWidgetItem(child, [item_text])
+                                    course_node.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+
+    def delete_selected_courses(self):
+        courses_to_delete = []
+        for item in self.list_unassigned.selectedItems(): 
+            courses_to_delete.append((item.text(), "list", item))
+            
+        for item in self.tree_categories.selectedItems():
+            if item.parent() is not None and item.parent().parent() is not None: 
+                courses_to_delete.append((item.text(0), "tree", item))
+                
+        if not courses_to_delete:
+            QMessageBox.information(self, "Selection Required", "Please select at least one course to delete.")
+            return
+            
+        if QMessageBox.question(self, "Confirm Delete", f"Are you sure you want to permanently delete {len(courses_to_delete)} course(s)?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                for text, src_type, item in courses_to_delete:
+                    course_id = text.rsplit('[', 1)[-1].replace(']', '').strip()
+                    cursor.execute("DELETE FROM courses WHERE course_id=?", (course_id,))
+                    cursor.execute("DELETE FROM completions WHERE course_id=?", (course_id,))
+                    
+                    if src_type == "list": 
+                        self.list_unassigned.takeItem(self.list_unassigned.row(item))
+                    else: 
+                        item.parent().takeChild(item.parent().indexOfChild(item))
+            self.courses_deleted = True 
+
+    def save_mapping(self):
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            reset_query = "UPDATE courses SET control_code='Unassigned', graph_category='Unassigned'"
+            if self.course_filter == "FAE": reset_query += " WHERE course_type IN ('FAE', 'Both')"
+            elif self.course_filter == "Sales": reset_query += " WHERE course_type IN ('Sales', 'Both')"
+                
+            cursor.execute(reset_query)
+            for i in range(self.tree_categories.topLevelItemCount()):
+                cc_node = self.tree_categories.topLevelItem(i)
+                for j in range(cc_node.childCount()):
+                    gc_node = cc_node.child(j)
+                    for k in range(gc_node.childCount()):
+                        course_id = gc_node.child(k).text(0).rsplit('[', 1)[-1].replace(']', '').strip()
+                        cursor.execute("UPDATE courses SET control_code=?, graph_category=? WHERE course_id=?", (cc_node.text(0), gc_node.text(0), course_id))
+        self.accept()
+
+class MatrixTabComponent:
+    def __init__(self, ui_window):
+        self.ui = ui_window
+        self.current_org_filter = "FAE" 
+        
+        self.ui.tabBar_matrix.addTab("FAE")
+        self.ui.tabBar_matrix.addTab("Sales")
+        self.ui.tabBar_matrix.addTab("Unknown")
+        
+        self.ui.btn_refresh_matrix.clicked.connect(self.open_mapping_manager)
+        self.ui.btn_clear_matrix.clicked.connect(self.export_matrix_to_excel)
+        
+        # --- FIX: Hide the horizontal headers to prevent the blank numbered row ---
+        self.ui.header_table.horizontalHeader().setVisible(False)
+        self.ui.table_matrix.horizontalHeader().setVisible(False)
+        
+        # --- FIX: Lock vertical header widths to perfectly align the top and bottom tables ---
+        self.ui.header_table.verticalHeader().setFixedWidth(50)
+        self.ui.table_matrix.verticalHeader().setFixedWidth(50)
+        
+        self.ui.table_matrix.horizontalScrollBar().valueChanged.connect(self.ui.header_table.horizontalScrollBar().setValue)
+        self.ui.header_table.horizontalScrollBar().valueChanged.connect(self.ui.table_matrix.horizontalScrollBar().setValue)
+
+        self.ui.header_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ui.header_table.customContextMenuRequested.connect(self.show_column_menu)
+        
+        self.ui.tabBar_matrix.currentChanged.connect(self.on_tab_changed)
+
+        self.setup_filters()
+        self.load_matrix_data()
+
+    def show_column_menu(self, pos):
+        menu = QMenu(self.ui)
+        menu.setStyleSheet("QMenu { background: #202025; color: white; border: 1px solid #3a3a40; }")
+        
+        for c in range(5):
+            text = self.ui.header_table.item(0, c).text() if self.ui.header_table.item(0, c) else f"Column {c}"
+            action = QWidgetAction(menu)
+            chk = QCheckBox(text)
+            chk.setStyleSheet("QCheckBox { padding: 5px; background: transparent; color: white; } QCheckBox:hover { background: #0085ca; }")
+            chk.setChecked(not self.ui.header_table.isColumnHidden(c))
+            chk.toggled.connect(lambda checked, col=c: self.toggle_column(col, checked))
+            action.setDefaultWidget(chk)
+            menu.addAction(action)
+            
+        menu.addSeparator()
+        courses_menu = menu.addMenu("Course Columns")
+        courses_menu.setStyleSheet("QMenu { background: #202025; color: white; border: 1px solid #3a3a40; }")
+        
+        for c in range(5, self.ui.header_table.columnCount()):
+            item = self.ui.header_table.item(2, c)
+            if not item: continue
+            action = QWidgetAction(courses_menu)
+            chk = QCheckBox(item.text())
+            chk.setStyleSheet("QCheckBox { padding: 5px; background: transparent; color: white; } QCheckBox:hover { background: #0085ca; }")
+            chk.setChecked(not self.ui.header_table.isColumnHidden(c))
+            chk.toggled.connect(lambda checked, col=c: self.toggle_column(col, checked))
+            action.setDefaultWidget(chk)
+            courses_menu.addAction(action)
+            
+        menu.exec_(self.ui.header_table.viewport().mapToGlobal(pos))
+
+    def toggle_column(self, col, show):
+        self.ui.header_table.setColumnHidden(col, not show)
+        self.ui.table_matrix.setColumnHidden(col, not show)
+
+    def export_matrix_to_excel(self):
+        path, _ = QFileDialog.getSaveFileName(self.ui, "Export Matrix", "", "Excel Files (*.xlsx)")
+        if not path: return
+        
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            cols = self.ui.header_table.columnCount()
+            rows = self.ui.table_matrix.rowCount()
+            
+            row0, row1, row2 = [], [], []
+            curr_cc, curr_gc = "", ""
+            
+            for c in range(cols):
+                if c < 5:
+                    row0.append(self.ui.header_table.item(0, c).text() if self.ui.header_table.item(0, c) else "")
+                    row1.append("")
+                    row2.append("")
+                else:
+                    if self.ui.header_table.item(0, c): 
+                        curr_cc = self.ui.header_table.item(0, c).text()
+                    if self.ui.header_table.item(1, c): 
+                        curr_gc = self.ui.header_table.item(1, c).text()
+                        
+                    row0.append(curr_cc)
+                    row1.append(curr_gc)
+                    row2.append(self.ui.header_table.item(2, c).text() if self.ui.header_table.item(2, c) else "")
+                    
+            data = []
+            for r in range(rows):
+                if self.ui.table_matrix.isRowHidden(r):
+                    continue
+                    
+                row_data = []
+                for c in range(cols):
+                    item = self.ui.table_matrix.item(r, c)
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
+                
+            df = pd.DataFrame(data, columns=pd.MultiIndex.from_arrays([row0, row1, row2]))
+            df.to_excel(path, index=False)
+            
+            QMessageBox.information(self.ui, "Export Successful", f"Matrix successfully exported to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self.ui, "Export Error", f"Failed to export matrix:\n{str(e)}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def open_mapping_manager(self):
+        dialog = CourseMappingDialog(self.current_org_filter, self.ui)
+        if dialog.exec_() == QDialog.Accepted or dialog.courses_deleted:
+            self.load_matrix_data()
+
+    def setup_filters(self):
+        self.ui.combo_matrix_region.clear()
+        self.ui.combo_matrix_region.addItems(["All Regions", "Americas", "Europe", "China", "Taiwan", "Japan", "Korea", "ISEA", "Worldwide"])
+        self.ui.combo_matrix_region.currentTextChanged.connect(self.apply_filters)
+        
+        self.ui.combo_matrix_code.clear()
+        self.ui.combo_matrix_code.addItems(["All Codes", "Low & Mid Power", "High Power", "Automotive", "Motor Driver"])
+        self.ui.combo_matrix_code.currentTextChanged.connect(self.apply_filters)
+
+        self.ui.search_matrix.textChanged.connect(self.apply_filters)
+
+    def apply_filters(self):
+        search_txt = self.ui.search_matrix.text().lower()
+        target_region = self.ui.combo_matrix_region.currentText()
+        target_code = self.ui.combo_matrix_code.currentText()
+        
+        table = self.ui.table_matrix
+        for row in range(table.rowCount()):
+            name = table.item(row, 0).text().lower()
+            email = table.item(row, 1).text().lower()
+            region = table.item(row, 2).data(Qt.UserRole) or "Worldwide"
+            assigned_codes = table.item(row, 0).data(Qt.UserRole + 1)
+            
+            match_search = (search_txt in name) or (search_txt in email)
+            match_region = (target_region == "All Regions" or region == target_region)
+            match_code = (target_code == "All Codes" or target_code in assigned_codes)
+            
+            table.setRowHidden(row, not (match_search and match_region and match_code))
+
+    def on_tab_changed(self, index):
+        self.current_org_filter = ["FAE", "Sales", "Unknown"][index]
+        self.load_matrix_data()
+
+    def fetch_matrix_data(self):
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            course_query = f"SELECT course_id, course_name, control_code, graph_category FROM courses WHERE course_type IN ('{self.current_org_filter}', 'Both') " + """ 
+                ORDER BY 
+                    CASE control_code 
+                        WHEN 'Low & Mid Power' THEN 1 
+                        WHEN 'Motor Driver' THEN 2 
+                        WHEN 'Automotive' THEN 3 
+                        WHEN 'High Power' THEN 4 
+                        ELSE 5 
+                    END ASC, 
+                    graph_category ASC, 
+                    course_name ASC
+            """
+            cursor.execute(course_query)
+            courses = cursor.fetchall()
+
+            student_query = """
+                SELECT user_id, first_name || ' ' || last_name, email, location, title, manager, control_codes, region_bucket 
+                FROM students WHERE organization = ? 
+                ORDER BY 
+                    CASE WHEN region_bucket = 'Worldwide' OR region_bucket IS NULL THEN 1 ELSE 0 END, 
+                    region_bucket ASC, 
+                    location ASC, 
+                    first_name ASC
+            """
+            cursor.execute(student_query, [self.current_org_filter])
+            students = cursor.fetchall()
+
+            cursor.execute("SELECT user_id, course_id, percent_complete FROM completions")
+            completions_map = {}
+            for uid, cid, percent in cursor.fetchall():
+                if uid not in completions_map: 
+                    completions_map[uid] = {}
+                completions_map[uid][cid] = safe_float(percent)
+
+        return courses, students, completions_map
+
+    def load_matrix_data(self):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            courses, students, completions_map = self.fetch_matrix_data()
+            table, header_table = self.ui.table_matrix, self.ui.header_table
+            
+            table.setUpdatesEnabled(False)
+            header_table.setUpdatesEnabled(False)
+            table.clear()
+            header_table.clear()
+
+            base_headers = ["Name", "Email", "Location", "Title", "Manager"]
+            total_cols = len(base_headers) + len(courses)
+            
+            table.setColumnCount(total_cols)
+            table.setRowCount(len(students))
+            header_table.setColumnCount(total_cols)
+            header_table.setRowCount(3) 
+            
+            for r in range(3): 
+                header_table.setVerticalHeaderItem(r, QTableWidgetItem(""))
+                
+            col_widths = [180, 240, 210, 210, 150]
+            for i in range(len(base_headers)): 
+                table.setColumnWidth(i, col_widths[i])
+                header_table.setColumnWidth(i, col_widths[i])
+                
+            for i in range(5, total_cols): 
+                table.setColumnWidth(i, 130)
+                header_table.setColumnWidth(i, 130)
+
+            header_table.setRowHeight(0, 26)
+            header_table.setRowHeight(1, 26)
+            header_table.setRowHeight(2, 45) 
+            header_table.setFixedHeight(26 + 26 + 45 + 2) 
+            
+            font_bold, font_small = table.font(), table.font()
+            font_bold.setBold(True)
+            font_small.setPointSize(9)
+
+            for col_idx, text in enumerate(base_headers):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                item.setBackground(QColor("#202025"))
+                item.setForeground(QColor("white"))
+                item.setFont(font_bold)
+                header_table.setItem(0, col_idx, item)
+                header_table.setSpan(0, col_idx, 3, 1)
+
+            current_cc, cc_start_col, current_gc, gc_start_col = None, 5, None, 5
+
+            for i, (course_id, cname, cc, gc) in enumerate(courses):
+                col_idx = 5 + i
+                c_item = QTableWidgetItem(cname if cname else "Unnamed")
+                c_item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                c_item.setBackground(QColor("#2a2a30"))
+                c_item.setForeground(QColor("white"))
+                c_item.setFont(font_small)
+                header_table.setItem(2, col_idx, c_item)
+                
+                if cc != current_cc:
+                    if current_cc is not None and (col_idx - cc_start_col) > 1: 
+                        header_table.setSpan(0, cc_start_col, 1, col_idx - cc_start_col)
+                        
+                    current_cc, cc_start_col = cc, col_idx
+                    cc_item = QTableWidgetItem(cc)
+                    cc_item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                    cc_item.setBackground(QColor("#4472C4") if cc != 'Unassigned' else QColor("#444444"))
+                    cc_item.setForeground(QColor("white"))
+                    cc_item.setFont(font_bold)
+                    header_table.setItem(0, col_idx, cc_item)
+                    
+                if gc != current_gc or (i > 0 and cc != courses[i-1][2]):
+                    if current_gc is not None and (col_idx - gc_start_col) > 1: 
+                        header_table.setSpan(1, gc_start_col, 1, col_idx - gc_start_col)
+                        
+                    current_gc, gc_start_col = gc, col_idx
+                    gc_item = QTableWidgetItem(gc)
+                    gc_item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                    gc_item.setBackground(QColor("#666666"))
+                    gc_item.setForeground(QColor("white"))
+                    gc_item.setFont(font_bold)
+                    header_table.setItem(1, col_idx, gc_item)
+
+            if courses:
+                last_col = 5 + len(courses)
+                if (last_col - cc_start_col) > 1: 
+                    header_table.setSpan(0, cc_start_col, 1, last_col - cc_start_col)
+                if (last_col - gc_start_col) > 1: 
+                    header_table.setSpan(1, gc_start_col, 1, last_col - gc_start_col)
+
+            color_green, color_yellow, color_red, color_gray = QColor(0, 176, 80), QColor(255, 255, 0), QColor(255, 0, 0), QColor(100, 100, 100)
+
+            for row_idx, student in enumerate(students):
+                user_id, name, email, location, title, manager, student_codes, region_bucket = student
+                student_codes_list = [c.strip() for c in student_codes.split(',')] if student_codes else []
+                
+                for col_idx, value in enumerate([name, email, location, title, manager]):
+                    item = QTableWidgetItem(str(value) if value else "N/A")
+                    if col_idx >= 1: item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                    
+                    if col_idx == 0: 
+                        item.setData(Qt.UserRole, user_id)
+                        item.setData(Qt.UserRole + 1, student_codes if student_codes else "") 
+                    elif col_idx == 2: 
+                        item.setData(Qt.UserRole, region_bucket)
+                        
+                    table.setItem(row_idx, col_idx, item)
+
+                user_completions = completions_map.get(user_id, {})
+                for i, (course_id, _, course_control_code, _) in enumerate(courses):
+                    col_idx = 5 + i
+                    pct = user_completions.get(course_id, 0.0)
+                    
+                    if course_control_code == 'Unassigned' or course_control_code not in student_codes_list: 
+                        cell_text, bg_color, text_color = "N/A", None, color_gray
+                    elif pct >= 100.0: 
+                        cell_text, bg_color, text_color = "1.00", color_green, Qt.black
+                    elif pct > 0.0: 
+                        cell_text, bg_color, text_color = "0.01", color_yellow, Qt.black
+                    else: 
+                        cell_text, bg_color, text_color = "0.00", color_red, Qt.white
+                            
+                    item = QTableWidgetItem(cell_text)
+                    item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+                    if bg_color: 
+                        item.setBackground(QBrush(bg_color))
+                    item.setForeground(QBrush(text_color))
+                    table.setItem(row_idx, col_idx, item)
+
+            self.apply_filters() 
+        finally:
+            table.setUpdatesEnabled(True)
+            header_table.setUpdatesEnabled(True)
+            QApplication.restoreOverrideCursor()
+</file>
+
+<file path="components/tab_students.py">
+from PyQt5.QtWidgets import (QTableWidgetItem, QHeaderView, QApplication, QDialog,
+                             QComboBox, QCheckBox, QMessageBox, QMenu, QWidgetAction, QFileDialog, QLineEdit, QDoubleSpinBox,QTableWidget)
+from PyQt5.QtGui import QStandardItemModel, QStandardItem, QColor
+from PyQt5.QtCore import Qt, QSettings, pyqtSignal
+from PyQt5 import uic
+import pandas as pd
+import win32com.client as win32
+import sqlite3, os, json, glob
+from database import DB_PATH
+from data_manager import DataManager, parse_region, load_dataframe, safe_float 
+
+DEFAULT_RULES = [
+    {"name": "Up-to-Date", "metric": "Overall Completion %", "operator": "==", "value": 100.0, "subject": "Power Integrations Training - All Modules Complete!", "body": "Hi Team,<br><br>Thank you for keeping your training 100% up to date. We appreciate your dedication!"},
+    {"name": "No Action / New", "metric": "Overall Completion %", "operator": "==", "value": 0.0, "subject": "Power Integrations Training - Action Required", "body": "Hi Team,<br><br>You have pending training modules that have not been started. Please log in to the portal and begin your training as soon as possible."},
+    {"name": "Progressed This Month", "metric": "Monthly Progress %", "operator": ">", "value": 0.0, "subject": "Power Integrations Training - Great Progress!", "body": "Hi Team,<br><br>Great job on the progress you've made this month. Keep up the good work and let us know if you need any support."},
+    {"name": "Missed New Module", "metric": "Missed New Modules", "operator": "==", "value": 1.0, "subject": "Power Integrations Training - New Module Assigned", "body": "Hi Team,<br><br>A new training module has been added to your curriculum. Please log in to complete this new requirement."},
+    {"name": "Stagnant Students", "metric": "Default", "operator": "==", "value": 0.0, "subject": "Power Integrations Training - Pending Modules", "body": "Hi Team,<br><br>We noticed your training progress has been stagnant recently. Please log in to the portal and continue your assigned modules."}
+]
+
+class TemplateEditorDialog(QDialog):
+    def __init__(self, rules, parent=None):
+        super().__init__(parent)
+        uic.loadUi(os.path.join(os.path.dirname(__file__), "..", "dialog_email_templates.ui"), self)
+        self.rules = rules 
+        
+        # --- FIX: Access combo_category from self after uic.loadUi ---
+        self.combo_category.addItems([r["name"] for r in self.rules])
+        self.combo_category.currentTextChanged.connect(self.load_template)
+        
+        self.edit_subject.textChanged.connect(self.save_current_template)
+        self.edit_body.textChanged.connect(self.save_current_template)
+        
+        if self.rules:
+            self.load_template(self.rules[0]["name"])
+
+    def load_template(self, category_name):
+        self.edit_subject.blockSignals(True)
+        self.edit_body.blockSignals(True)
+        
+        for rule in self.rules:
+            if rule["name"] == category_name:
+                self.edit_subject.setText(rule.get("subject", "Power Integrations Training Update"))
+                self.edit_body.setHtml(rule.get("body", "Hi Team,<br><br>Please check your training portal."))
+                break
+                
+        self.edit_subject.blockSignals(False)
+        self.edit_body.blockSignals(False)
+
+    def save_current_template(self):
+        category_name = self.combo_category.currentText()
+        for rule in self.rules:
+            if rule["name"] == category_name:
+                rule["subject"] = self.edit_subject.text()
+                rule["body"] = self.edit_body.toHtml()
+                break
+
+class ProgressLogicDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        uic.loadUi(os.path.join(os.path.dirname(__file__), "..", "dialog_progress_logic.ui"), self)
+        
+        self.settings = QSettings("PowerIntegrations", "PowerTrack")
+        self.rules = json.loads(self.settings.value("progress_rules", json.dumps(DEFAULT_RULES)))
+        
+        for r in self.rules:
+            if "subject" not in r: r["subject"] = "Power Integrations Training Update"
+            if "body" not in r: r["body"] = "Hi Team,<br><br>Please check your training portal."
+
+        self.table_rules.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_rules.setSelectionBehavior(QTableWidget.SelectRows)
+        
+        self.btn_add.clicked.connect(self.add_rule)
+        self.btn_delete.clicked.connect(self.delete_rule)
+        self.btn_up.clicked.connect(self.move_up)
+        self.btn_down.clicked.connect(self.move_down)
+        self.btn_edit_templates.clicked.connect(self.open_template_editor)
+        self.buttonBox.accepted.connect(self.save_rules)
+
+        self.populate_table()
+
+    def populate_table(self):
+        self.table_rules.setRowCount(0)
+        for rule in self.rules:
+            self.add_rule_row(rule)
+
+    def add_rule_row(self, rule=None):
+        if rule is None: rule = {"name": "New Category", "metric": "Monthly Progress %", "operator": ">=", "value": 20.0, "subject": "Training Update", "body": "Please review your training."}
+            
+        row = self.table_rules.rowCount()
+        self.table_rules.insertRow(row)
+
+        name_edit = QLineEdit(rule["name"])
+        name_edit.setStyleSheet("background: transparent; color: white; border: none; padding: 5px;")
+        self.table_rules.setCellWidget(row, 0, name_edit)
+
+        metric_combo = QComboBox()
+        metric_combo.addItems(["Overall Completion %", "Monthly Progress %", "Missed New Modules", "Default"])
+        metric_combo.setCurrentText(rule["metric"])
+        self.table_rules.setCellWidget(row, 1, metric_combo)
+
+        op_combo = QComboBox()
+        op_combo.addItems([">", ">=", "<", "<=", "=="])
+        op_combo.setCurrentText(rule["operator"])
+        self.table_rules.setCellWidget(row, 2, op_combo)
+
+        val_spin = QDoubleSpinBox()
+        val_spin.setRange(-100, 100)
+        val_spin.setValue(float(rule["value"]))
+        self.table_rules.setCellWidget(row, 3, val_spin)
+
+    def add_rule(self):
+        self.add_rule_row()
+
+    def delete_rule(self):
+        row = self.table_rules.currentRow()
+        if row >= 0: self.table_rules.removeRow(row)
+
+    def move_up(self):
+        row = self.table_rules.currentRow()
+        if row > 0:
+            self.sync_ui_to_rules()
+            # Swap the rules in the data list
+            self.rules[row], self.rules[row - 1] = self.rules[row - 1], self.rules[row]
+            # Redraw table and re-select the moved row
+            self.populate_table()
+            self.table_rules.selectRow(row - 1)
+
+    def move_down(self):
+        row = self.table_rules.currentRow()
+        if row >= 0 and row < self.table_rules.rowCount() - 1:
+            self.sync_ui_to_rules()
+            # Swap the rules in the data list
+            self.rules[row], self.rules[row + 1] = self.rules[row + 1], self.rules[row]
+            # Redraw table and re-select the moved row
+            self.populate_table()
+            self.table_rules.selectRow(row + 1)
+
+    def get_row_data(self, row):
+        current_name_in_ui = self.table_rules.cellWidget(row, 0).text()
+        
+        subj, body = "Power Integrations Training Update", "Hi Team,<br><br>Please check your training portal."
+        for r in self.rules:
+            if r["name"] == current_name_in_ui:
+                subj, body = r.get("subject", subj), r.get("body", body)
+                break
+                
+        return {
+            "name": current_name_in_ui,
+            "metric": self.table_rules.cellWidget(row, 1).currentText(),
+            "operator": self.table_rules.cellWidget(row, 2).currentText(),
+            "value": self.table_rules.cellWidget(row, 3).value(),
+            "subject": subj,
+            "body": body
+        }
+        
+    def sync_ui_to_rules(self):
+        self.rules = [self.get_row_data(i) for i in range(self.table_rules.rowCount())]
+
+    def open_template_editor(self):
+        self.sync_ui_to_rules()
+        editor = TemplateEditorDialog(self.rules, self)
+        editor.exec_()
+
+    def save_rules(self):
+        self.sync_ui_to_rules()
+        self.settings.setValue("progress_rules", json.dumps(self.rules))
+
+class CheckableComboBox(QComboBox):
+    selection_changed = pyqtSignal(str, str)
+
+    def __init__(self, user_id, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.setModel(QStandardItemModel(self))
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setAlignment(Qt.AlignCenter)
+        self.view().pressed.connect(self.handle_item_pressed)
+        self._changed = False
+
+    def handle_item_pressed(self, index):
+        item = self.model().itemFromIndex(index)
+        item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+        self._changed = True
+        self.update_text()
+
+    def set_items(self, items, checked_items):
+        self.clear()
+        for text in items:
+            item = QStandardItem(text)
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            item.setData(Qt.Checked if text in checked_items else Qt.Unchecked, Qt.CheckStateRole)
+            self.model().appendRow(item)
+        self.update_text()
+        self._changed = False 
+
+    def update_text(self):
+        checked = []
+        for i in range(self.model().rowCount()):
+            item = self.model().item(i)
+            if item.checkState() == Qt.Checked:
+                checked.append(item.text())
+                
+        text = ", ".join(checked)
+        self.lineEdit().setText(text)
+        return text
+
+    def hidePopup(self):
+        super().hidePopup()
+        if self._changed:
+            self.selection_changed.emit(self.user_id, self.update_text())
+            self._changed = False
+
+
+class StudentTabComponent:
+    def __init__(self, ui_window):
+        self.ui = ui_window
+        self.is_loading = True
+        self.current_org_filter = "FAE" 
+        
+        self.settings = QSettings("PowerIntegrations", "PowerTrack")
+        self.current_data_folder = self.settings.value("current_data_folder", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data"))
+        self.base_data_folder = self.settings.value("base_data_folder", None)
+        try: self.progress_dict = json.loads(self.settings.value("progress_dict", "{}"))
+        except Exception: self.progress_dict = {}
+
+        self.setup_ui_bindings()
+        self.setup_table()
+        self.setup_filters()
+        self.load_students_to_table()
+
+    def setup_ui_bindings(self):
+        self.ui.tabBar_students.addTab("FAE")
+        self.ui.tabBar_students.addTab("Sales")
+        self.ui.tabBar_students.addTab("Unknown")
+        self.ui.tabBar_students.currentChanged.connect(self.on_tab_changed)
+        
+        self.ui.btn_update_status.clicked.connect(lambda: self.select_data_folder(is_update=False))
+        self.ui.btn_refresh.clicked.connect(lambda: self.select_data_folder(is_update=True))
+        
+        if hasattr(self.ui, 'btn_edit_progress'):
+            self.ui.btn_edit_progress.clicked.connect(self.open_progress_logic_editor)
+            
+        if hasattr(self.ui, 'btn_email_students'):
+            self.ui.btn_email_students.clicked.connect(self.draft_emails)
+            
+        self.ui.table_students.itemChanged.connect(self.on_cell_edited)
+
+    def draft_emails(self):
+        try:
+            import win32com.client as win32
+        except ImportError:
+            QMessageBox.warning(self.ui, "Missing Library", "The Outlook Integration requires the 'pywin32' library.\n\nPlease run this command in your terminal:\npip install pywin32")
+            return
+
+        table = self.ui.table_students
+        category_emails = {}
+        
+        for row in range(table.rowCount()):
+            if not table.isRowHidden(row):
+                email = table.item(row, 1).text()
+                progress = table.item(row, 8).text()
+                
+                if email and email != "N/A" and "@" in email:
+                    if progress not in category_emails:
+                        category_emails[progress] = []
+                    category_emails[progress].append(email)
+                    
+        if not category_emails:
+            QMessageBox.information(self.ui, "No Students", "No valid emails found in the current filtered view.")
+            return
+
+        try:
+            outlook = win32.Dispatch('outlook.application')
+        except Exception as e:
+            QMessageBox.critical(self.ui, "Outlook Error", f"Could not connect to Outlook. Is Outlook installed and open?\n\nError: {e}")
+            return
+
+        rules = json.loads(self.settings.value("progress_rules", json.dumps(DEFAULT_RULES)))
+        templates = {r["name"]: {"subject": r.get("subject", ""), "body": r.get("body", "")} for r in rules}
+        
+        default_template = {
+            "subject": "Power Integrations Training Update",
+            "body": "Hi Team,<br><br>Please check your Power Integrations training portal for updates on your required modules."
+        }
+
+        drafts_created = 0
+        for category, emails in category_emails.items():
+            mail = outlook.CreateItem(0)
+            mail.BCC = "; ".join(emails)
+            
+            tmpl = templates.get(category, default_template)
+            mail.Subject = tmpl["subject"]
+            mail.HTMLBody = tmpl["body"]
+            
+            mail.Display(False) 
+            drafts_created += 1
+            
+        QMessageBox.information(self.ui, "Success", f"Successfully opened {drafts_created} email draft(s) in Outlook.\n\nStudents were grouped by their Progress category.")
+
+
+    def open_progress_logic_editor(self):
+        dialog = ProgressLogicDialog(self.ui)
+        if dialog.exec_() == QDialog.Accepted:
+            if self.base_data_folder and os.path.exists(self.base_data_folder) and self.current_data_folder and os.path.exists(self.current_data_folder):
+                QApplication.setOverrideCursor(Qt.WaitCursor)
+                try:
+                    self.progress_dict = self.calculate_progress(self.base_data_folder, self.current_data_folder)
+                    self.settings.setValue("progress_dict", json.dumps(self.progress_dict))
+                    self.setup_filters() 
+                    self.load_students_to_table()
+                finally:
+                    QApplication.restoreOverrideCursor()
+
+    def setup_filters(self):
+        self.ui.search_student.textChanged.connect(self.apply_filters)
+        
+        self.ui.combo_region.clear()
+        self.ui.combo_region.addItems(["All Regions", "Americas", "Europe", "China", "Taiwan", "Japan", "Korea", "ISEA", "Worldwide"])
+        self.ui.combo_region.currentTextChanged.connect(self.apply_filters)
+        
+        rules = json.loads(self.settings.value("progress_rules", json.dumps(DEFAULT_RULES)))
+        unique_categories = list(dict.fromkeys([r["name"] for r in rules]))
+        
+        self.ui.combo_progress.currentTextChanged.disconnect() if self.ui.combo_progress.receivers(self.ui.combo_progress.currentTextChanged) > 0 else None
+        self.ui.combo_progress.clear()
+        self.ui.combo_progress.addItem("All Status")
+        self.ui.combo_progress.addItems(unique_categories)
+        self.ui.combo_progress.addItem("N/A")
+        self.ui.combo_progress.currentTextChanged.connect(self.apply_filters)
+        
+        self.ui.btn_clear_filters.clicked.connect(self.clear_filters)
+
+    def apply_filters(self):
+        search_text = self.ui.search_student.text().lower()
+        target_region = self.ui.combo_region.currentText()
+        target_progress = self.ui.combo_progress.currentText()
+        
+        visible_count = 0
+        table = self.ui.table_students
+        
+        for row in range(table.rowCount()):
+            name = table.item(row, 0).text().lower()
+            email = table.item(row, 1).text().lower()
+            region = table.item(row, 2).data(Qt.UserRole) or "Worldwide" 
+            progress = table.item(row, 8).text()
+            
+            match_search = (search_text in name) or (search_text in email)
+            match_region = (target_region == "All Regions" or region == target_region)
+            match_progress = (target_progress == "All Status" or progress == target_progress)
+            
+            if match_search and match_region and match_progress:
+                table.setRowHidden(row, False)
+                visible_count += 1
+            else:
+                table.setRowHidden(row, True)
+                
+        self.ui.lbl_showing.setText(f"Showing {visible_count} of {table.rowCount()} students")
+
+    def clear_filters(self):
+        self.ui.search_student.clear()
+        self.ui.combo_region.setCurrentIndex(0)
+        self.ui.combo_progress.setCurrentIndex(0)
+
+    def setup_table(self):
+        table = self.ui.table_students
+        table.setColumnCount(9) 
+        table.setHorizontalHeaderLabels(["Name", "Email", "Location", "Title", "Manager", "Organization", "Control Code", "Avg. Completion", "Progress"])
+        
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self.show_column_menu)
+        
+        table.verticalHeader().setMinimumWidth(50) 
+        table.setColumnWidth(0, 180)
+        table.setColumnWidth(1, 200)
+        table.setColumnWidth(2, 180)
+        table.setColumnWidth(3, 180)
+        table.setColumnWidth(4, 160)
+        table.setColumnWidth(5, 100)
+        table.setColumnWidth(6, 200)
+        table.setColumnWidth(7, 120)
+        header.setStretchLastSection(True) 
+
+    def show_column_menu(self, pos):
+        menu = QMenu(self.ui)
+        menu.setStyleSheet("QMenu { background: #202025; color: white; border: 1px solid #3a3a40; }")
+        table = self.ui.table_students
+        
+        for c in range(table.columnCount()):
+            text = table.horizontalHeaderItem(c).text()
+            action = QWidgetAction(menu)
+            chk = QCheckBox(text)
+            chk.setStyleSheet("QCheckBox { padding: 5px; background: transparent; color: white; } QCheckBox:hover { background: #0085ca; }")
+            chk.setChecked(not table.isColumnHidden(c))
+            chk.toggled.connect(lambda checked, col=c: table.setColumnHidden(col, not checked))
+            action.setDefaultWidget(chk)
+            menu.addAction(action)
+            
+        menu.exec_(table.horizontalHeader().viewport().mapToGlobal(pos))
+
+    def select_data_folder(self, is_update=False):
+        dialog_title = "Select Update Folder (e.g. data/feb)" if is_update else "Select Base Data Folder (e.g. data/jan)"
+        
+        # Pull the last directory used for the dialog so it opens in a convenient place
+        last_dialog_dir = self.settings.value("last_dialog_dir", self.current_data_folder)
+        
+        folder_path = QFileDialog.getExistingDirectory(self.ui, dialog_title, last_dialog_dir, QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
+        
+        if folder_path:
+            # Save the parent directory just for the file dialog's memory
+            self.settings.setValue("last_dialog_dir", os.path.dirname(folder_path))
+            
+            # FIX: Save the EXACT folder selected (e.g. data/jan) as the current data
+            self.current_data_folder = folder_path
+            self.settings.setValue("current_data_folder", self.current_data_folder)
+            
+            if not is_update:
+                self.base_data_folder = folder_path
+                self.settings.setValue("base_data_folder", self.base_data_folder)
+                self.progress_dict = {} 
+                self.settings.setValue("progress_dict", "{}") 
+            
+            self.run_data_ingestion_with_folder(folder_path, is_update)
+
+    def evaluate_rule(self, stats, rule):
+        if rule["metric"] == "Default": return True
+        val = stats.get(rule["metric"], 0.0)
+        target = float(rule["value"])
+        op = rule["operator"]
+        
+        if op == ">": return val > target
+        if op == "<": return val < target
+        if op == ">=": return val >= target
+        if op == "<=": return val <= target
+        if op == "==": return val == target
+        return False
+
+    def calculate_progress(self, base_folder, update_folder):
+        if not base_folder or not os.path.exists(base_folder): return {}
+        
+        rules = json.loads(self.settings.value("progress_rules", json.dumps(DEFAULT_RULES)))
+
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, control_codes FROM students")
+            student_assigned_codes = {str(row[0]): [c.strip() for c in str(row[1]).split(',')] if row[1] else [] for row in cursor.fetchall()}
+            cursor.execute("SELECT course_id, control_code FROM courses")
+            course_control_codes = {str(row[0]): str(row[1]) for row in cursor.fetchall()}
+            cursor.execute("SELECT user_id, email FROM students")
+            uid_to_email = {str(row[0]): str(row[1]).strip().lower() for row in cursor.fetchall()}
+
+        def get_completions(folder):
+            user_courses, all_courses = {}, set()
+            all_files = [os.path.join(root, file) for root, _, files in os.walk(folder) for file in files if file.lower().endswith(('.csv', '.xlsx', '.xls'))]
+
+            for f in all_files:
+                filename = os.path.basename(f).lower()
+                if filename in ['students.csv', 'students.xlsx'] or filename.startswith('skilljar metric'): continue
+                
+                df = load_dataframe(f)
+                if df is None: continue
+                    
+                cols = {str(c).lower().strip(): c for c in df.columns}
+                uid_col, course_col, pct_col = cols.get('user id'), cols.get('course id', cols.get('course name', cols.get('course title'))), cols.get('% complete', cols.get('percent complete'))
+                
+                if not uid_col or not course_col: continue
+                    
+                for _, row in df.iterrows():
+                    uid_val, course, pct = row.get(uid_col), row.get(course_col), row.get(pct_col) if pct_col else 0
+                    if pd.isna(uid_val) or pd.isna(course): continue
+                    
+                    uid_str, course_str = str(uid_val).strip(), str(course).strip()
+                    if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+                    
+                    all_courses.add(course_str)
+                    if uid_str not in user_courses: user_courses[uid_str] = {}
+                    user_courses[uid_str][course_str] = max(user_courses[uid_str].get(course_str, 0.0), safe_float(pct))
+            return user_courses, all_courses
+
+        def get_base_control_codes(folder):
+            metric_files = glob.glob(os.path.join(folder, "**", "Skilljar Metric*"), recursive=True) or glob.glob(os.path.join(folder, "Skilljar Metric*"))
+            email_to_codes = {}
+            for file in set(metric_files):
+                df = load_dataframe(file, header_row=None)
+                if df is None: continue
+                try:
+                    first_row = [str(x).lower().strip() for x in df.iloc[0].values]
+                    if 'control code' not in first_row and 'email' not in first_row: continue 
+                    try: email_col_idx = first_row.index('email')
+                    except ValueError: continue
+
+                    code_map = {}
+                    for col_idx in range(4):
+                        header_val = str(df.iloc[3, col_idx]).lower()
+                        if 'low' in header_val or 'mid' in header_val: code_map[col_idx] = "Low & Mid Power"
+                        elif 'high' in header_val: code_map[col_idx] = "High Power"
+                        elif 'auto' in header_val: code_map[col_idx] = "Automotive"
+                        elif 'motor' in header_val: code_map[col_idx] = "Motor Driver"
+
+                    if not code_map: continue
+                    for row_idx in range(4, len(df)):
+                        email = str(df.iloc[row_idx, email_col_idx]).strip().lower()
+                        if not email or '@' not in email: continue
+
+                        assigned_codes = [code_name for col_idx, code_name in code_map.items() if str(df.iloc[row_idx, col_idx]).strip() in ['1', '1.0', '1.00']]
+                        if assigned_codes:
+                            if email not in email_to_codes: email_to_codes[email] = set()
+                            email_to_codes[email].update(assigned_codes)
+                except Exception: pass
+            return email_to_codes
+
+        base_data, base_all_courses = get_completions(base_folder)
+        update_data, update_all_courses = get_completions(update_folder)
+        base_email_to_codes = get_base_control_codes(base_folder)
+        base_uid_codes = {db_uid: base_email_to_codes[db_email] for db_uid, db_email in uid_to_email.items() if db_email in base_email_to_codes}
+        
+        progress_dict = {}
+        for uid_str, my_required_codes in student_assigned_codes.items():
+            if not my_required_codes or my_required_codes == ['']:
+                progress_dict[uid_str] = "N/A"
+                continue
+                
+            update_courses, base_courses = update_data.get(uid_str, {}), base_data.get(uid_str, {})
+            my_required_cids = [cid for cid, tag in course_control_codes.items() if tag in my_required_codes]
+            
+            if not my_required_cids:
+                progress_dict[uid_str] = "N/A"
+                continue
+            
+            overall_pct = sum(update_courses.get(cid, 0.0) for cid in my_required_cids) / len(my_required_cids)
+            base_overall_pct = sum(base_courses.get(cid, 0.0) for cid in my_required_cids) / len(my_required_cids)
+            
+            missed_new = 0.0
+            unstarted_courses = [c for c in my_required_cids if update_courses.get(c, 0.0) == 0.0]
+            for c in unstarted_courses:
+                if c not in base_all_courses: missed_new = 1.0; break
+                cc = course_control_codes.get(c)
+                student_base_codes = base_uid_codes.get(uid_str)
+                if student_base_codes is not None and cc and cc != 'Unassigned' and cc not in student_base_codes:
+                    missed_new = 1.0; break
+            
+            stats = {
+                "Overall Completion %": overall_pct,
+                "Monthly Progress %": overall_pct - base_overall_pct,
+                "Missed New Modules": missed_new,
+                "Default": 0.0
+            }
+            
+            assigned_category = "Unknown"
+            for rule in rules:
+                if self.evaluate_rule(stats, rule):
+                    assigned_category = rule["name"]
+                    break
+                    
+            progress_dict[uid_str] = assigned_category
+                
+        return progress_dict
+
+    def run_data_ingestion_with_folder(self, folder_path, is_update=False):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            dm = DataManager()
+            student_file_csv = os.path.join(folder_path, "students.csv")
+            student_file_xlsx = os.path.join(folder_path, "students.xlsx")
+            
+            if os.path.exists(student_file_csv): dm.import_students(student_file_csv)
+            elif os.path.exists(student_file_xlsx): dm.import_students(student_file_xlsx)
+
+            dm.import_skilljar_metrics(folder_path)
+            dm.import_course_files(folder_path)
+            dm.import_control_codes(folder_path) 
+          
+            if is_update and self.base_data_folder:
+                self.progress_dict = self.calculate_progress(self.base_data_folder, folder_path)
+                self.settings.setValue("progress_dict", json.dumps(self.progress_dict))
+            
+            self.load_students_to_table()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def on_tab_changed(self, index):
+        tab_names = ["FAE", "Sales", "Unknown"]
+        self.current_org_filter = tab_names[index]
+        self.load_students_to_table()
+
+    def get_all_students(self):
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            query = """
+                SELECT user_id, first_name || ' ' || last_name AS name, email, location, organization, title, manager, region_bucket, control_codes 
+                FROM students WHERE organization = ? 
+                ORDER BY CASE WHEN region_bucket = 'Worldwide' OR region_bucket IS NULL THEN 1 ELSE 0 END, region_bucket ASC, location ASC, first_name ASC
+            """
+            cursor.execute(query, [self.current_org_filter])
+            return cursor.fetchall()
+
+    def load_students_to_table(self):
+        try: self.progress_dict = json.loads(self.settings.value("progress_dict", "{}"))
+        except Exception: self.progress_dict = {}
+        
+        self.is_loading = True 
+        all_students = self.get_all_students()
+        
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT course_id, control_code FROM courses")
+            course_map = {str(row[0]): str(row[1]) for row in cursor.fetchall()}
+            
+            cursor.execute("SELECT user_id, course_id, percent_complete FROM completions")
+            completions_map = {}
+            for uid, cid, pct in cursor.fetchall():
+                uid_str = str(uid).strip()
+                if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+                if uid_str not in completions_map: completions_map[uid_str] = {}
+                completions_map[uid_str][str(cid)] = safe_float(pct)
+
+        self.ui.table_students.setRowCount(0)
+        self.ui.table_students.setRowCount(len(all_students))
+        
+        for row_idx, student_data in enumerate(all_students):
+            user_id, name, email, location, organization, title, manager, region_bucket, control_codes = student_data
+            
+            uid_str = str(user_id).strip()
+            if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+            
+            my_codes = [c.strip() for c in str(control_codes).split(',')] if control_codes and str(control_codes).lower() not in ['nan', 'n/a', 'none', ''] else []
+            my_req_courses = [cid for cid, cc in course_map.items() if cc in my_codes]
+            
+            if not my_req_courses: 
+                avg_comp_str = "N/A"
+            else:
+                total_pct = sum(completions_map.get(uid_str, {}).get(cid, 0.0) for cid in my_req_courses)
+                avg_comp_str = f"{(total_pct / len(my_req_courses)):.1f}%"
+            
+            row_values = [name, email, location, title, manager, organization, control_codes, avg_comp_str, self.progress_dict.get(uid_str, "N/A")]
+            
+            for col_idx, value in enumerate(row_values):
+                val_str = str(value) if value and str(value) != 'nan' else "N/A"
+                
+                if col_idx == 5: 
+                    combo = QComboBox()
+                    combo.addItems(["FAE", "Sales", "Unknown"])
+                    combo.setCurrentText(val_str)
+                    combo.currentTextChanged.connect(lambda text, uid=user_id: self.update_student_org(uid, text))
+                    self.ui.table_students.setCellWidget(row_idx, col_idx, combo)
+                    continue
+                    
+                if col_idx == 6:
+                    combo = CheckableComboBox(uid_str)
+                    all_codes = ["Low & Mid Power", "High Power", "Automotive", "Motor Driver"]
+                    checked_codes = [c.strip() for c in val_str.split(',')] if val_str != "N/A" else []
+                    combo.set_items(all_codes, checked_codes)
+                    combo.selection_changed.connect(self.update_student_codes)
+                    self.ui.table_students.setCellWidget(row_idx, col_idx, combo)
+                    continue
+
+                item = QTableWidgetItem(val_str if col_idx != 6 else (val_str if val_str != "N/A" else ""))
+                if col_idx >= 1: item.setTextAlignment(Qt.AlignCenter)
+                item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsEnabled | (Qt.ItemIsEditable if col_idx not in [7, 8] else Qt.NoItemFlags))
+                
+                if col_idx == 0: item.setData(Qt.UserRole, user_id)
+                elif col_idx == 2: item.setData(Qt.UserRole, region_bucket)
+                    
+                self.ui.table_students.setItem(row_idx, col_idx, item)
+                
+        self.update_tab_counts(all_students)
+        self.apply_filters()
+        self.is_loading = False
+
+    def update_student_org(self, user_id, new_org):
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.cursor().execute("UPDATE students SET organization=? WHERE user_id=?", (new_org, user_id))
+        if new_org != self.current_org_filter: self.load_students_to_table()
+            
+    def update_student_codes(self, user_id, new_codes_str):
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.cursor().execute("UPDATE students SET control_codes=? WHERE user_id=?", (new_codes_str, user_id))
+        
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            if self.base_data_folder and os.path.exists(self.base_data_folder) and self.current_data_folder and os.path.exists(self.current_data_folder):
+                self.progress_dict = self.calculate_progress(self.base_data_folder, self.current_data_folder)
+                self.settings.setValue("progress_dict", json.dumps(self.progress_dict))
+            self.load_students_to_table()
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def update_tab_counts(self, all_students):
+        total = len(all_students)
+        internal = sum(1 for s in all_students if "@power.com" in str(s[1]).lower())
+        self.ui.lbl_total.setText(f"<b>Total:</b> {total}")
+        self.ui.lbl_internal.setText(f"Internal: {internal}") 
+        self.ui.lbl_external.setText(f"External: {total - internal}")
+
+    def on_cell_edited(self, item):
+        if self.is_loading: return
+        
+        row, col, new_value = item.row(), item.column(), item.text().strip()
+        user_id = self.ui.table_students.item(row, 0).data(Qt.UserRole)
+        col_map = {0: ("first_name", "last_name"), 1: ("email",), 2: ("location",), 3: ("title",), 4: ("manager",)}
+        db_columns = col_map.get(col)
+        if not db_columns: return
+
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            if col == 0: 
+                parts = new_value.split(' ', 1)
+                cursor.execute("UPDATE students SET first_name=?, last_name=? WHERE user_id=?", (parts[0], parts[1] if len(parts) > 1 else "", user_id))
+            elif col == 2:
+                cursor.execute("UPDATE students SET location=?, region_bucket=? WHERE user_id=?", (new_value, parse_region(new_value), user_id))
+            else:
+                cursor.execute(f"UPDATE students SET {db_columns[0]}=? WHERE user_id=?", (new_value, user_id))
+
+        if col == 2: self.load_students_to_table()
+</file>
+
+<file path="data_manager.py">
+import pandas as pd
+import difflib
+import os
+import glob
+import re
+from database import get_connection, setup_database
+
+def parse_region(location_str):
+    loc = str(location_str).lower()
+    if any(x in loc for x in ['india', 'sea', 'singapore', 'malaysia', 'isea', 'philippines', 'vietnam', 'thailand', 'indonesia', 'australia', 'new zealand']): return 'ISEA'
+    if any(x in loc for x in ['us', 'usa', 'canada', 'america', 'mexico', 'brazil', 'argentina', 'san jose', 'california', 'texas', 'boston']): return 'Americas'
+    if any(x in loc for x in ['europe', 'germany', 'italy', 'uk', 'switzerland', 'france', 'munich', 'spain', 'poland']): return 'Europe'
+    if any(x in loc for x in ['china', 'beijing', 'shenzhen', 'shanghai', 'qingdao', 'chengdu', 'foshan', 'xiamen']): return 'China'
+    if any(x in loc for x in ['taiwan', 'taipei']): return 'Taiwan'
+    if any(x in loc for x in ['japan', 'tokyo', 'yokohama']): return 'Japan'
+    if any(x in loc for x in ['korea', 'seoul']): return 'Korea'
+    return 'Worldwide'
+
+def clean_string_for_matching(text):
+    if not isinstance(text, str): return ""
+    text = text.lower()
+    text = text.replace('-sales-students.xlsx', '').replace('-fae-students.xlsx', '')
+    text = text.replace('students.xlsx', '').replace('-students.xlsx', '')
+    text = text.replace('.xlsx', '').replace('.csv', '')
+    text = text.replace('introduction to', 'introducing').replace('introduction-to', 'introducing')
+    return re.sub(r'[^a-z0-9]', '', text)
+
+def safe_float(val, default=0.0):
+    try: return float(str(val).replace('%', '').strip())
+    except (ValueError, TypeError): return default
+
+def load_dataframe(file_path, header_row=0):
+    try:
+        # Fix: Fallback for any function calls that explicitly pass "infer"
+        if header_row == "infer":
+            header_row = 0
+            
+        if file_path.lower().endswith('.csv'):
+            return pd.read_csv(file_path, low_memory=False, header=header_row)
+        elif file_path.lower().endswith(('.xlsx', '.xls')):
+            return pd.read_excel(file_path, header=header_row)
+    except Exception as e:
+        print(f"Error loading {file_path}: {e}")
+    return None
+
+class DataManager:
+    def __init__(self):
+        setup_database()
+
+    def import_students(self, file_path):
+        df = load_dataframe(file_path)
+        if df is None: return
+            
+        cols = {str(c).lower().strip(): c for c in df.columns}
+        uid_col = cols.get('user id')
+        if not uid_col: return
+            
+        df = df.dropna(subset=[uid_col])
+        
+        with get_connection() as conn:
+            cursor = conn.cursor()
+
+            for _, row in df.iterrows():
+                uid = str(row.get(uid_col, '')).strip()
+                if uid.endswith('.0'): uid = uid[:-2] 
+                
+                first = str(row.get(cols.get('first name', 'First name'), '')).strip()
+                last = str(row.get(cols.get('last name', 'Last name'), '')).strip()
+                email = str(row.get(cols.get('email', 'Email'), '')).strip()
+
+                if first.lower() == 'nan': first = ""
+                if last.lower() == 'nan': last = ""
+                if email.lower() == 'nan': email = ""
+
+                if not first and not last and '@' in email:
+                    prefix = email.split('@')[0]
+                    parts = prefix.split('.')
+                    if len(parts) >= 2: first, last = parts[0].title(), parts[-1].title() 
+                    else: first = parts[0].title()
+
+                cursor.execute('''
+                    INSERT INTO students (user_id, first_name, last_name, email, signed_up, latest_activity)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        first_name=excluded.first_name, last_name=excluded.last_name, email=excluded.email
+                ''', (uid, first, last, email, str(row.get(cols.get('signed up'), '')), str(row.get(cols.get('latest activity'), ''))))
+
+    def import_skilljar_metrics(self, folder_path):
+        metric_files = glob.glob(os.path.join(folder_path, "**", "Skilljar Metric*"), recursive=True)
+        if not metric_files: metric_files = glob.glob(os.path.join(folder_path, "Skilljar Metric*"))
+            
+        with get_connection() as conn:
+            cursor = conn.cursor()
+
+            for file in set(metric_files):
+                df = load_dataframe(file)
+                if df is None: continue
+
+                cols = {str(c).lower().strip(): c for c in df.columns}
+                email_col = cols.get('email')
+                if not email_col: continue
+
+                df = df.dropna(subset=[email_col])
+                df = df[df[email_col].astype(str).str.contains('@', na=False)]
+
+                for _, row in df.iterrows():
+                    email = str(row.get(email_col, '')).strip()
+                    location = str(row.get(cols.get('location', 'Location'), 'N/A')).strip()
+                    title = str(row.get(cols.get('title', 'Title'), 'N/A')).strip()
+                    manager = str(row.get(cols.get('manager', 'Manager'), 'N/A')).strip()
+                    
+                    if location.lower() == 'nan': location = 'N/A'
+                    region_bucket = parse_region(location)
+
+                    cursor.execute('''
+                        UPDATE students SET location = ?, title = ?, manager = ?, region_bucket = ? WHERE email = ?
+                    ''', (location, title, manager, region_bucket, email))
+
+    def import_course_files(self, folder_path):
+        all_files = []
+        for root, _, files in os.walk(folder_path):
+            for file in files:
+                if file.lower().endswith(('.csv', '.xlsx', '.xls')):
+                    all_files.append(os.path.join(root, file))
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+
+            for file in all_files:
+                filename = os.path.basename(file).lower()
+                if filename in ['students.csv', 'students.xlsx'] or filename.startswith('skilljar metric'): continue
+                    
+                df = load_dataframe(file)
+                if df is None: continue
+                    
+                cols = {str(c).lower().strip(): c for c in df.columns}
+                uid_col = cols.get('user id')
+                course_id_col = cols.get('course id', cols.get('course name', cols.get('course title')))
+                course_name_col = cols.get('course name', cols.get('course title', cols.get('course id')))
+                pct_col = cols.get('% complete', cols.get('percent complete'))
+                
+                if not uid_col or not course_id_col: continue
+
+                org_label = "FAE" if "fae" in filename else "Sales" if "sales" in filename else "Unknown"
+
+                for _, row in df.iterrows():
+                    user_id, course_id, course_name = row.get(uid_col), row.get(course_id_col), row.get(course_name_col)
+                    if pd.isna(user_id) or pd.isna(course_id): continue
+                    
+                    uid_str = str(user_id).strip()
+                    if uid_str.endswith('.0'): uid_str = uid_str[:-2]
+                    course_id_str = str(course_id).strip()
+                    course_name_str = str(course_name).strip() if not pd.isna(course_name) else course_id_str
+                            
+                    cursor.execute('''
+                        INSERT INTO courses (course_id, course_name, course_type) VALUES (?, ?, ?) 
+                        ON CONFLICT(course_id) DO UPDATE SET 
+                            course_name = excluded.course_name,
+                            course_type = CASE WHEN course_type = 'Unknown' THEN excluded.course_type WHEN course_type != excluded.course_type AND excluded.course_type != 'Unknown' THEN 'Both' ELSE course_type END
+                    ''', (course_id_str, course_name_str, org_label))
+
+                    if org_label != "Unknown":
+                        cursor.execute("UPDATE students SET organization = ? WHERE user_id = ? AND (organization = 'Unknown' OR organization IS NULL)", (org_label, uid_str))
+
+                    clean_pct = safe_float(row.get(pct_col, 0))
+
+                    cursor.execute('''
+                        INSERT INTO completions (user_id, course_id, percent_complete)
+                        VALUES (?, ?, ?) ON CONFLICT(user_id, course_id) DO UPDATE SET percent_complete=excluded.percent_complete
+                    ''', (uid_str, course_id_str, clean_pct))
+
+    def import_control_codes(self, folder_path):
+        metric_files = glob.glob(os.path.join(folder_path, "**", "Skilljar Metric*"), recursive=True)
+        if not metric_files: 
+            metric_files = glob.glob(os.path.join(folder_path, "Skilljar Metric*"))
+            
+        with get_connection() as conn:
+            cursor = conn.cursor()
+
+            for file in set(metric_files):
+                df = load_dataframe(file, header_row=None)
+                if df is None: continue
+                
+                try:
+                    first_row = [str(x).lower().strip() for x in df.iloc[0].values]
+                    if 'control code' not in first_row and 'email' not in first_row: 
+                        continue 
+                    
+                    try: 
+                        email_col_idx = first_row.index('email')
+                    except ValueError: 
+                        continue
+
+                    code_map = {}
+                    for col_idx in range(4):
+                        header_val = str(df.iloc[3, col_idx]).lower()
+                        if 'low' in header_val or 'mid' in header_val: code_map[col_idx] = "Low & Mid Power"
+                        elif 'high' in header_val: code_map[col_idx] = "High Power"
+                        elif 'auto' in header_val: code_map[col_idx] = "Automotive"
+                        elif 'motor' in header_val: code_map[col_idx] = "Motor Driver"
+
+                    if not code_map: continue
+
+                    for row_idx in range(4, len(df)):
+                        email = str(df.iloc[row_idx, email_col_idx]).strip()
+                        if not email or '@' not in email: continue
+
+                        assigned_codes = []
+                        for col_idx, code_name in code_map.items():
+                            val = str(df.iloc[row_idx, col_idx]).strip()
+                            if val in ['1', '1.0', '1.00']: 
+                                assigned_codes.append(code_name)
+
+                        if assigned_codes:
+                            final_codes_str = ", ".join(sorted(list(set(assigned_codes))))
+                            cursor.execute("UPDATE students SET control_codes=? WHERE LOWER(email)=LOWER(?)", (final_codes_str, email))
+
+                except Exception as e:
+                    print(f"Error parsing control codes from {file}: {e}")
+
+    def assign_course_categories(self, folder_path):
+        metric_files = glob.glob(os.path.join(folder_path, "**", "Skilljar Metric*"), recursive=True)
+        if not metric_files: 
+            metric_files = glob.glob(os.path.join(folder_path, "Skilljar Metric*"))
+        
+        if not metric_files: return 
+            
+        with get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT course_id, course_name FROM courses")
+            db_courses = cursor.fetchall()
+            
+            db_course_dict = {}
+            for cid, cname in db_courses:
+                db_course_dict[clean_string_for_matching(cname)] = cid
+                db_course_dict[clean_string_for_matching(cid)] = cid 
+            
+            for file in set(metric_files):
+                df = load_dataframe(file, header_row=None)
+                if df is None: continue
+                
+                try:
+                    first_row = [str(x).lower().strip() for x in df.iloc[0].values]
+                    if 'all course' not in first_row: continue 
+                    
+                    start_col = first_row.index('all course') + 1
+                    
+                    current_cc = "Unassigned"
+                    current_gc = "Unassigned"
+                    
+                    for col_idx in range(start_col, len(df.columns)):
+                        cc_val = str(df.iloc[1, col_idx]).strip()
+                        if cc_val and cc_val.lower() != 'nan':
+                            if "low" in cc_val.lower() or "mid" in cc_val.lower(): current_cc = "Low & Mid Power"
+                            elif "motor" in cc_val.lower(): current_cc = "Motor Driver"
+                            elif "auto" in cc_val.lower(): current_cc = "Automotive"
+                            elif "high" in cc_val.lower(): current_cc = "High Power"
+                            
+                        gc_val = str(df.iloc[2, col_idx]).strip()
+                        if gc_val and gc_val.lower() != 'nan':
+                            current_gc = gc_val
+                            
+                        course_name = str(df.iloc[3, col_idx]).strip()
+                        if not course_name or course_name.lower() in ['nan', 'summary', 'course completion rate', 'category completion rate', 'all course completion']:
+                            continue
+                            
+                        cleaned_csv_name = clean_string_for_matching(course_name)
+                        closest_matches = difflib.get_close_matches(cleaned_csv_name, list(db_course_dict.keys()), n=1, cutoff=0.5)
+                        
+                        if closest_matches:
+                            matched_cid = db_course_dict[closest_matches[0]]
+                            cursor.execute('UPDATE courses SET control_code = ?, graph_category = ? WHERE course_id = ?', 
+                                          (current_cc, current_gc, matched_cid))
+                            
+                except Exception as e:
+                    print(f"Error parsing master CSV categories: {e}")
+</file>
+
+<file path="database.py">
+import sqlite3
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "powertrack.db")
+
+def get_connection():
+    return sqlite3.connect(DB_PATH)
+
+def setup_database():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS students (
+                user_id TEXT PRIMARY KEY,
+                first_name TEXT,
+                last_name TEXT,
+                email TEXT,
+                organization TEXT DEFAULT 'Unknown',
+                signed_up TEXT,
+                latest_activity TEXT,
+                location TEXT DEFAULT 'N/A',
+                title TEXT DEFAULT 'N/A',
+                manager TEXT DEFAULT 'N/A',
+                progress_status TEXT DEFAULT 'N/A',
+                control_codes TEXT DEFAULT '',
+                region_bucket TEXT DEFAULT 'Worldwide'
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS courses (
+                course_id TEXT PRIMARY KEY,
+                course_name TEXT,
+                course_type TEXT DEFAULT 'Unknown',
+                control_code TEXT DEFAULT 'Unassigned',
+                graph_category TEXT DEFAULT 'Unassigned'
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS completions (
+                user_id TEXT,
+                course_id TEXT,
+                percent_complete INTEGER,
+                completed_at TEXT,
+                score TEXT,
+                success_status TEXT,
+                PRIMARY KEY (user_id, course_id),
+                FOREIGN KEY (user_id) REFERENCES students (user_id),
+                FOREIGN KEY (course_id) REFERENCES courses (course_id)
+            )
+        ''')
+
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS monthly_snapshots (
+                month TEXT,
+                team TEXT,
+                published INTEGER,
+                taiwan REAL,
+                china REAL,
+                korea REAL,
+                japan REAL,
+                americas REAL,
+                europe REAL,
+                isea REAL,
+                worldwide REAL,
+                PRIMARY KEY (month, team)
+            )
+        ''')
+
+        migrations = [
+            "ALTER TABLE students ADD COLUMN control_codes TEXT DEFAULT ''",
+            "ALTER TABLE students ADD COLUMN region_bucket TEXT DEFAULT 'Worldwide'",
+            "ALTER TABLE courses ADD COLUMN control_code TEXT DEFAULT 'Unassigned'",
+            "ALTER TABLE courses ADD COLUMN graph_category TEXT DEFAULT 'Unassigned'",
+        ]
+        
+        for migration in migrations:
+            try: cursor.execute(migration)
+            except sqlite3.OperationalError: pass 
+
+setup_database()
+</file>
+
+<file path="design.ui">
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1200</width><height>800</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Power Track</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+    QMainWindow { background: transparent; }
+    QWidget#centralwidget { background: #16161a; border: 1px solid #3a3a40; border-radius: 12px; }
+    QFrame#headerr, QFrame#footer { background: transparent; border: none; }
+    QFrame#selectionframe { background: #202025; border: 1px solid #3a3a40; border-radius: 8px; }
+    
+    /* Buttons */
+    #centralwidget QPushButton { padding: 0px 15px; background: #0085ca; color: white; border-radius: 5px; font-weight: bold; min-height: 28px; }
+    #centralwidget QPushButton:hover { background: #3c649f; }
+    #centralwidget QPushButton:disabled { background: #333333; color: #777777; }
+    #headerr QPushButton { padding: 0px; }
+    
+    /* Main Tabs Navigation */
+    QPushButton#btn_tab_students, QPushButton#btn_tab_matrix, QPushButton#btn_tab_analytics {
+        padding: 0px 10px; background-color: transparent; color: #777777; border: none; border-bottom: 3px solid transparent; border-radius: 0px; font-size: 14px;
+    }
+    QPushButton#btn_tab_students:hover, QPushButton#btn_tab_matrix:hover, QPushButton#btn_tab_analytics:hover { background-color: #2a2a30; }
+    QPushButton#btn_tab_students:checked, QPushButton#btn_tab_matrix:checked, QPushButton#btn_tab_analytics:checked { color: white; border-bottom: 3px solid #0085ca; font-weight: bold; }
+
+    /* Inputs */
+    #centralwidget QLineEdit, #centralwidget QComboBox { background: #1a1a1e; color: #e0e0e0; border-radius: 4px; padding: 4px 5px; border: 1px solid #3a3a40; min-height: 20px;}
+    
+    /* Group Boxes */
+    QGroupBox { color: #f0f0f0; border: 1px solid #3a3a40; border-radius: 5px; margin-top: 10px; font-weight: bold; }
+    QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; }
+    
+    /* Global TabWidget / TabBar (Forced explicit sizing for Analytics and Matrix sub-tabs) */
+    QTabWidget::pane { border: none; background: transparent; }
+    QTabBar::tab { 
+        background: #202025; 
+        color: #777777; 
+        border: 1px solid #3a3a40; 
+        padding: 8px 15px; 
+        font-size: 14px; 
+        min-width: 120px;
+        min-height: 20px;
+        margin-right: 2px;
+    }
+    QTabBar::tab:selected { background: #0085ca; color: white; border: 1px solid #0085ca; font-weight: bold; }
+    QTabBar::tab:hover:!selected { background: #2a2a30; }
+    
+    /* Tables */
+    QTableWidget { alternate-background-color: #1a1a1e; background: #121214; color: #f0f0f0; border: 1px solid #3a3a40; border-radius: 5px; font-size: 13px; gridline-color: #3a3a40; }
+    QHeaderView::section { background-color: #202025; color: white; padding: 6px; border: 1px solid #3a3a40; font-weight: bold; font-size: 13px; }
+    QTableWidget::item:selected { background-color: #0085ca; color: white; }
+    QTableCornerButton::section { background-color: #202025; border: 1px solid #3a3a40; }
+    
+    /* Matrix Headers specifically */
+    QTableWidget#header_table { border-bottom: none; border-bottom-left-radius: 0px; border-bottom-right-radius: 0px; }
+    QTableWidget#table_matrix { border-top-left-radius: 0px; border-top-right-radius: 0px; }
+    
+    /* Scroll Areas */
+    QScrollArea { border: 1px solid #3a3a40; background-color: #121214; border-radius: 4px; }
+
+    #centralwidget QLabel { color: white; border: none; }
+    
+    /* Color Specific Buttons */
+    #btn_update_status { background: #ffaa00; color: #121214; }
+    #btn_update_status:hover { background: #cc8800; }
+    #btn_refresh, #btn_refresh_matrix { background: #87ceeb; color: #121214; }
+    #btn_refresh:hover, #btn_refresh_matrix:hover { background: #5bb2d4; }
+    #btn_clear_filters, #btn_clear_matrix { background: #f08080; color: #121214; }
+    #btn_clear_filters:hover, #btn_clear_matrix:hover { background: #cd5c5c; }
+   </string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayout_main">
+    <property name="spacing"><number>0</number></property>
+    <property name="margin"><number>0</number></property>
+    <item>
+     <widget class="QFrame" name="headerr">
+      <property name="minimumSize"><size><width>0</width><height>50</height></size></property>
+      <layout class="QHBoxLayout" name="horizontalLayout_header">
+       <item><widget class="QLabel" name="data_exporter"><property name="font"><font><family>Bahnschrift</family><pointsize>16</pointsize><bold>true</bold></font></property><property name="text"><string>Power Track</string></property></widget></item>
+       <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+       <item><widget class="QPushButton" name="minimize_button"><property name="maximumSize"><size><width>30</width><height>30</height></size></property><property name="text"><string>—</string></property></widget></item>
+       <item><widget class="QPushButton" name="maximize_button"><property name="maximumSize"><size><width>30</width><height>30</height></size></property><property name="text"><string>▢</string></property></widget></item>
+       <item><widget class="QPushButton" name="exit_button"><property name="maximumSize"><size><width>30</width><height>30</height></size></property><property name="text"><string>✕</string></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout_body">
+      <property name="margin"><number>15</number></property>
+      <property name="spacing"><number>15</number></property>
+      
+      <!-- MAIN PANEL -->
+      <item>
+       <widget class="QFrame" name="selectionframe">
+        <layout class="QVBoxLayout" name="verticalLayout_selection">
+         <property name="margin"><number>15</number></property>
+         <property name="spacing"><number>15</number></property>
+         
+         <!-- NAVIGATION -->
+         <item>
+          <layout class="QHBoxLayout" name="tab_layout">
+           <property name="spacing"><number>0</number></property>
+           <item>
+            <widget class="QPushButton" name="btn_tab_students">
+             <property name="minimumSize"><size><width>120</width><height>35</height></size></property>
+             <property name="text"><string>Students</string></property>
+             <property name="checkable"><bool>true</bool></property>
+             <property name="checked"><bool>true</bool></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btn_tab_matrix">
+             <property name="minimumSize"><size><width>120</width><height>35</height></size></property>
+             <property name="text"><string>Course Matrix</string></property>
+             <property name="checkable"><bool>true</bool></property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btn_tab_analytics">
+             <property name="minimumSize"><size><width>120</width><height>35</height></size></property>
+             <property name="text"><string>Analytics</string></property>
+             <property name="checkable"><bool>true</bool></property>
+            </widget>
+           </item>
+           <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+          </layout>
+         </item>
+         
+         <item>
+          <widget class="QStackedWidget" name="stackedWidget">
+           <property name="currentIndex"><number>0</number></property>
+           
+           <!-- PAGE 0: STUDENTS -->
+           <widget class="QWidget" name="page_students">
+            <layout class="QVBoxLayout" name="layout_page_students">
+             <property name="margin"><number>0</number></property>
+             <item>
+              <widget class="QGroupBox" name="group_filters">
+               <property name="title"><string>Filters</string></property>
+               <layout class="QHBoxLayout">
+                <item><widget class="QLabel"><property name="text"><string>Search:</string></property></widget></item>
+                <item><widget class="QLineEdit" name="search_student"></widget></item>
+                <item><widget class="QLabel"><property name="text"><string>Location/Region:</string></property></widget></item>
+                <item><widget class="QComboBox" name="combo_region"></widget></item>
+                <item><widget class="QLabel"><property name="text"><string>Progress:</string></property></widget></item>
+                <item><widget class="QComboBox" name="combo_progress"></widget></item>
+                <item><widget class="QPushButton" name="btn_clear_filters"><property name="text"><string>Clear Filters</string></property></widget></item>
+                <item><widget class="QPushButton" name="btn_edit_progress"><property name="text"><string>Edit Logic</string></property><property name="styleSheet"><string>background: #0085ca; color: white;</string></property></widget></item>
+                 <item><widget class="QPushButton" name="btn_email_students"><property name="text"><string>Email Students</string></property><property name="styleSheet"><string>background: #0085ca; color: white;</string></property></widget></item>
+                <item><widget class="QLabel" name="lbl_showing"><property name="text"><string>Showing all 0 students</string></property><property name="styleSheet"><string>color: #5bb2d4;</string></property></widget></item>
+                <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+               </layout>
+              </widget>
+             </item>
+             
+             <!-- FIXED SUB TABS (No expanding container) -->
+             <item>
+              <widget class="QTabBar" name="tabBar_students">
+              </widget>
+             </item>
+
+             <item>
+              <layout class="QHBoxLayout">
+               <item><widget class="QLabel" name="lbl_total"><property name="text"><string>&lt;b&gt;Total: 0&lt;/b&gt;</string></property></widget></item>
+               <item><widget class="QLabel" name="lbl_internal"><property name="text"><string>Internal: 0</string></property></widget></item>
+               <item><widget class="QLabel" name="lbl_external"><property name="text"><string>External: 0</string></property></widget></item>
+               <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+              </layout>
+             </item>
+             <item>
+              <widget class="QTableWidget" name="table_students">
+              </widget>
+             </item>
+             <item>
+              <layout class="QHBoxLayout">
+               <item><widget class="QPushButton" name="btn_update_status"><property name="text"><string>Load Base Data</string></property></widget></item>
+               <item><widget class="QPushButton" name="btn_refresh"><property name="text"><string>Update Data</string></property></widget></item>
+               <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+           
+           <!-- PAGE 1: COURSE MATRIX -->
+           <widget class="QWidget" name="page_matrix">
+            <layout class="QVBoxLayout" name="layout_page_matrix">
+             <property name="margin"><number>0</number></property>
+             <item>
+              <widget class="QGroupBox" name="group_matrix_filters">
+               <property name="title"><string>Matrix Filters</string></property>
+               <layout class="QHBoxLayout">
+                <item><widget class="QLabel"><property name="text"><string>Search:</string></property></widget></item>
+                <item><widget class="QLineEdit" name="search_matrix"></widget></item>
+                <item><widget class="QLabel"><property name="text"><string>Control Code:</string></property></widget></item>
+                <item><widget class="QComboBox" name="combo_matrix_code"></widget></item>
+                <item><widget class="QLabel"><property name="text"><string>Region:</string></property></widget></item>
+                <item><widget class="QComboBox" name="combo_matrix_region"></widget></item>
+                <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+               </layout>
+              </widget>
+             </item>
+             
+             <!-- FIXED SUB TABS (No expanding container) -->
+             <item>
+              <widget class="QTabBar" name="tabBar_matrix">
+              </widget>
+             </item>
+
+             <!-- BUNDLED HEADER AND TABLE -->
+             <item>
+              <layout class="QVBoxLayout" name="layout_matrix_tables">
+               <property name="spacing"><number>0</number></property>
+               <item>
+                <widget class="QTableWidget" name="header_table">
+                 <property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
+                 <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
+                 <property name="wordWrap"><bool>true</bool></property>
+                 <!-- FIX: Explicitly hide XML Horizontal Header to be safe -->
+                 <attribute name="horizontalHeaderVisible">
+                  <bool>false</bool>
+                 </attribute>
+                </widget>
+               </item>
+               <item>
+                <widget class="QTableWidget" name="table_matrix">
+                 <!-- FIX: Explicitly hide XML Horizontal Header to be safe -->
+                 <attribute name="horizontalHeaderVisible">
+                  <bool>false</bool>
+                 </attribute>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             
+             <item>
+              <layout class="QHBoxLayout">
+               <item><widget class="QPushButton" name="btn_refresh_matrix"><property name="text"><string>Map Courses</string></property></widget></item>
+               <item><widget class="QPushButton" name="btn_clear_matrix"><property name="text"><string>Export Matrix</string></property></widget></item>
+               <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+
+           <!-- PAGE 2: ANALYTICS -->
+           <widget class="QWidget" name="page_analytics">
+            <layout class="QVBoxLayout" name="layout_page_analytics">
+             <property name="margin"><number>0</number></property>
+             <item>
+              <widget class="QTabWidget" name="tabWidget_analytics">
+               
+               <!-- FAE ANALYTICS TAB -->
+               <widget class="QWidget" name="tab_ana_fae">
+                <attribute name="title"><string>FAE</string></attribute>
+                <layout class="QVBoxLayout">
+                 <property name="margin"><number>0</number></property>
+                 <item>
+                  <widget class="QTabWidget" name="tab_fae">
+                   <widget class="QWidget" name="tab_fae_table">
+                    <attribute name="title"><string>Table</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QTableWidget" name="table_fae"></widget></item>
+                    </layout>
+                   </widget>
+                   <widget class="QWidget" name="tab_fae_charts">
+                    <attribute name="title"><string>Charts</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QScrollArea" name="scroll_fae"><property name="widgetResizable"><bool>true</bool></property></widget></item>
+                    </layout>
+                   </widget>
+                  </widget>
+                 </item>
+                 <item>
+                  <layout class="QHBoxLayout">
+                   <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+                   <item><widget class="QPushButton" name="btn_export_fae"><property name="text"><string>Export FAE</string></property><property name="minimumHeight"><number>35</number></property></widget></item>
+                  </layout>
+                 </item>
+                </layout>
+               </widget>
+
+               <!-- SALES ANALYTICS TAB -->
+               <widget class="QWidget" name="tab_ana_sales">
+                <attribute name="title"><string>Sales</string></attribute>
+                <layout class="QVBoxLayout">
+                 <property name="margin"><number>0</number></property>
+                 <item>
+                  <widget class="QTabWidget" name="tab_sales">
+                   <widget class="QWidget" name="tab_sales_table">
+                    <attribute name="title"><string>Table</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QTableWidget" name="table_sales"></widget></item>
+                    </layout>
+                   </widget>
+                   <widget class="QWidget" name="tab_sales_charts">
+                    <attribute name="title"><string>Charts</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QScrollArea" name="scroll_sales"><property name="widgetResizable"><bool>true</bool></property></widget></item>
+                    </layout>
+                   </widget>
+                  </widget>
+                 </item>
+                 <item>
+                  <layout class="QHBoxLayout">
+                   <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+                   <item><widget class="QPushButton" name="btn_export_sales"><property name="text"><string>Export Sales</string></property><property name="minimumHeight"><number>35</number></property></widget></item>
+                  </layout>
+                 </item>
+                </layout>
+               </widget>
+
+               <!-- SUMMARY ANALYTICS TAB -->
+               <widget class="QWidget" name="tab_ana_summary">
+                <attribute name="title"><string>Summary</string></attribute>
+                <layout class="QVBoxLayout">
+                 <property name="margin"><number>0</number></property>
+                 <item>
+                  <widget class="QTabWidget" name="tab_summary">
+                   <widget class="QWidget" name="tab_summary_table">
+                    <attribute name="title"><string>Table</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QTableWidget" name="table_summary"></widget></item>
+                    </layout>
+                   </widget>
+                   <widget class="QWidget" name="tab_summary_charts">
+                    <attribute name="title"><string>Charts</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QScrollArea" name="scroll_summary"><property name="widgetResizable"><bool>true</bool></property></widget></item>
+                    </layout>
+                   </widget>
+                  </widget>
+                 </item>
+                 <item>
+                  <layout class="QHBoxLayout">
+                   <item><widget class="QComboBox" name="combo_snapshot_month">
+                     <property name="minimumHeight"><number>35</number></property>
+                     <item><property name="text"><string>Jan</string></property></item>
+                     <item><property name="text"><string>Feb</string></property></item>
+                     <item><property name="text"><string>Mar</string></property></item>
+                     <item><property name="text"><string>Apr</string></property></item>
+                     <item><property name="text"><string>May</string></property></item>
+                     <item><property name="text"><string>Jun</string></property></item>
+                     <item><property name="text"><string>Jul</string></property></item>
+                     <item><property name="text"><string>Aug</string></property></item>
+                     <item><property name="text"><string>Sep</string></property></item>
+                     <item><property name="text"><string>Oct</string></property></item>
+                     <item><property name="text"><string>Nov</string></property></item>
+                     <item><property name="text"><string>Dec</string></property></item>
+                   </widget></item>
+                   <item><widget class="QPushButton" name="btn_save_snapshot">
+                     <property name="text"><string>Save Month Snapshot</string></property>
+                     <property name="minimumHeight"><number>35</number></property>
+                     <property name="styleSheet"><string>background: #00B050; color: white;</string></property>
+                   </widget></item>
+                   <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+                   <item><widget class="QPushButton" name="btn_export_summary"><property name="text"><string>Export History</string></property><property name="minimumHeight"><number>35</number></property></widget></item>
+                  </layout>
+                 </item>
+                </layout>
+               </widget>
+
+              </widget>
+             </item>
+            </layout>
+           </widget>
+           
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+</file>
+
+<file path="dialog_email_templates.ui">
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TemplateEditorDialog</class>
+ <widget class="QDialog" name="TemplateEditorDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>600</width><height>500</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Edit Email Templates</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+    QDialog { background: #202025; color: white; }
+    QLabel { color: white; font-weight: bold; }
+    QLineEdit, QTextEdit, QComboBox { background: #121214; color: white; border: 1px solid #3a3a40; border-radius: 4px; padding: 5px; }
+    QPushButton { padding: 6px; border-radius: 4px; font-weight: bold; background: #0085ca; color: white; }
+    QPushButton:hover { background: #3c649f; }
+   </string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout">
+     <item>
+      <widget class="QLabel" name="label">
+       <property name="text"><string>Category Rule:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="combo_category">
+       <property name="sizePolicy"><sizepolicy hsizetype="Expanding" vsizetype="Fixed"><horstretch>0</horstretch><verstretch>0</verstretch></sizepolicy></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="label_2">
+     <property name="text"><string>Email Subject:</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLineEdit" name="edit_subject"/>
+   </item>
+   <item>
+    <widget class="QLabel" name="label_3">
+     <property name="text"><string>Email Body (HTML supported):</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTextEdit" name="edit_body"/>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons"><set>QDialogButtonBox::Close</set></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>TemplateEditorDialog</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>TemplateEditorDialog</receiver>
+   <slot>reject()</slot>
+  </connection>
+ </connections>
+</ui>
+</file>
+
+<file path="dialog_mapping.ui">
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CourseMappingDialog</class>
+ <widget class="QDialog" name="CourseMappingDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>780</width><height>550</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Map Courses to Control Codes</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+    QDialog { background: #202025; color: white; }
+    QLabel { color: white; font-weight: bold; }
+    QTreeWidget, QListWidget { background: #121214; border: 1px solid #3a3a40; color: white; outline: none; }
+    QTreeWidget::item:selected, QListWidget::item:selected { background: #0085ca; }
+    QPushButton { padding: 8px; border-radius: 4px; font-weight: bold; }
+    QPushButton#btn_save { background: #0085ca; color: white; }
+    QPushButton#btn_save:hover { background: #3c649f; }
+    QPushButton#btn_delete_course { background: #f08080; color: #121214; }
+    QPushButton#btn_delete_course:hover { background: #cd5c5c; }
+   </string>
+  </property>
+  <layout class="QHBoxLayout" name="horizontalLayout">
+   
+   <!-- LEFT SIDE: UNASSIGNED COURSES & DELETE BUTTON -->
+   <item>
+    <layout class="QVBoxLayout" name="left_layout">
+     <item>
+      <widget class="QLabel" name="lbl_list">
+       <property name="text"><string>Unassigned Courses:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QListWidget" name="list_unassigned">
+       <property name="dragEnabled"><bool>true</bool></property>
+       <property name="acceptDrops"><bool>true</bool></property>
+       <property name="dragDropMode"><enum>QAbstractItemView::DragDrop</enum></property>
+       <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_delete_course">
+       <property name="text"><string>Delete Selected Course(s)</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+   <!-- RIGHT SIDE: ASSIGNED COURSES TREE & SAVE BUTTON -->
+   <item>
+    <layout class="QVBoxLayout" name="right_layout">
+     <item>
+      <widget class="QLabel" name="lbl_tree">
+       <property name="text"><string>Assigned Courses:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QTreeWidget" name="tree_categories">
+       <property name="headerHidden"><bool>true</bool></property>
+       <property name="dragEnabled"><bool>true</bool></property>
+       <property name="acceptDrops"><bool>true</bool></property>
+       <property name="dragDropMode"><enum>QAbstractItemView::DragDrop</enum></property>
+       <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+       <column><property name="text"><string notr="true">1</string></property></column>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_save">
+       <property name="text"><string>Save Mapping</string></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+</file>
+
+<file path="dialog_progress_logic.ui">
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ProgressLogicDialog</class>
+ <widget class="QDialog" name="ProgressLogicDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>650</width><height>400</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Edit Progress Logic</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+    QDialog { background: #202025; color: white; }
+    QLabel { color: white; font-weight: bold; }
+    QTableWidget { background: #121214; color: white; border: 1px solid #3a3a40; gridline-color: #3a3a40; }
+    QHeaderView::section { background-color: #2a2a30; color: white; font-weight: bold; border: 1px solid #3a3a40; }
+    QPushButton { padding: 6px; border-radius: 4px; font-weight: bold; background: #0085ca; color: white; }
+    QPushButton:hover { background: #3c649f; }
+    QPushButton#btn_delete { background: #f08080; color: #121214; }
+    QPushButton#btn_delete:hover { background: #cd5c5c; }
+    QPushButton#btn_edit_templates { background: #00B050; color: white; }
+    QPushButton#btn_edit_templates:hover { background: #008a3e; }
+    QComboBox, QDoubleSpinBox, QLineEdit { background: #1a1a1e; color: white; border: 1px solid #3a3a40; }
+   </string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="label">
+     <property name="text"><string>Progress Rules (Evaluated Top to Bottom)</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="table_rules">
+     <property name="columnCount"><number>4</number></property>
+     <column><property name="text"><string>Category Name</string></property></column>
+     <column><property name="text"><string>Metric</string></property></column>
+     <column><property name="text"><string>Operator</string></property></column>
+     <column><property name="text"><string>Value (%)</string></property></column>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout">
+     <item><widget class="QPushButton" name="btn_up"><property name="text"><string>Move Up</string></property></widget></item>
+     <item><widget class="QPushButton" name="btn_down"><property name="text"><string>Move Down</string></property></widget></item>
+     <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+     <item><widget class="QPushButton" name="btn_add"><property name="text"><string>+ Add Rule</string></property></widget></item>
+     <item><widget class="QPushButton" name="btn_delete"><property name="text"><string>- Delete Rule</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_2">
+     <item><widget class="QPushButton" name="btn_edit_templates"><property name="text"><string>Edit Templates</string></property></widget></item>
+     <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Save</set></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>ProgressLogicDialog</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>ProgressLogicDialog</receiver>
+   <slot>reject()</slot>
+  </connection>
+ </connections>
+</ui>
+</file>
+
+<file path="main.py">
+import sys
+from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5 import uic
+from PyQt5.QtCore import Qt, QPoint
+
+from components.tab_students import StudentTabComponent
+from components.tab_matrix import MatrixTabComponent 
+from components.tab_analytics import AnalyticsTabComponent
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        uic.loadUi('design.ui', self)
+
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        self.tab_buttons = [
+            self.btn_tab_students,
+            self.btn_tab_matrix,
+            self.btn_tab_analytics
+        ]
+
+        self.btn_tab_students.clicked.connect(lambda: self.switch_tab(0))
+        self.btn_tab_matrix.clicked.connect(lambda: self.switch_tab(1))
+        self.btn_tab_analytics.clicked.connect(lambda: self.switch_tab(2))
+
+        self.exit_button.clicked.connect(self.close)
+        self.minimize_button.clicked.connect(self.showMinimized)
+        if hasattr(self, 'maximize_button'):
+            self.maximize_button.clicked.connect(self.toggle_maximize)
+
+        self.oldPos = self.pos()
+
+        # INITIALIZE THE TAB COMPONENTS
+        self.student_tab = StudentTabComponent(self) 
+        self.matrix_tab = MatrixTabComponent(self) 
+        self.analytics_tab = AnalyticsTabComponent(self)
+        
+        self.switch_tab(0)
+
+    def switch_tab(self, index):
+        self.stackedWidget.setCurrentIndex(index)
+        
+        for i, btn in enumerate(self.tab_buttons):
+            btn.setChecked(i == index)
+            
+        if index == 1: self.matrix_tab.load_matrix_data()
+        if index == 2: self.analytics_tab.update_data()
+
+    def toggle_maximize(self):
+        if self.isMaximized(): self.showNormal()
+        else: self.showMaximized()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.oldPos = event.globalPos()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton:
+            delta = QPoint(event.globalPos() - self.oldPos)
+            self.move(self.x() + delta.x(), self.y() + delta.y())
+            self.oldPos = event.globalPos()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
+</file>
+
+</files>

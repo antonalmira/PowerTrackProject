@@ -1,0 +1,13 @@
+# Ignore python cache files
+**/__pycache__/
+**/*.pyc
+
+# Ignore virtual environments
+venv/
+.venv/
+
+# Ignore local datasets
+data/
+
+# Ignore previous repomix outputs
+repomix-output.xml

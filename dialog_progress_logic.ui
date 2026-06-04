@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ProgressLogicDialog</class>
+ <widget class="QDialog" name="ProgressLogicDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>650</width><height>400</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Edit Progress Logic</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">
+    QDialog { background: #202025; color: white; }
+    QLabel { color: white; font-weight: bold; }
+    QTableWidget { background: #121214; color: white; border: 1px solid #3a3a40; gridline-color: #3a3a40; }
+    QHeaderView::section { background-color: #2a2a30; color: white; font-weight: bold; border: 1px solid #3a3a40; }
+    QPushButton { padding: 6px; border-radius: 4px; font-weight: bold; background: #0085ca; color: white; }
+    QPushButton:hover { background: #3c649f; }
+    QPushButton#btn_delete { background: #f08080; color: #121214; }
+    QPushButton#btn_delete:hover { background: #cd5c5c; }
+    QPushButton#btn_edit_templates { background: #00B050; color: white; }
+    QPushButton#btn_edit_templates:hover { background: #008a3e; }
+    QComboBox, QDoubleSpinBox, QLineEdit { background: #1a1a1e; color: white; border: 1px solid #3a3a40; }
+   </string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="label">
+     <property name="text"><string>Progress Rules (Evaluated Top to Bottom)</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="table_rules">
+     <property name="columnCount"><number>4</number></property>
+     <column><property name="text"><string>Category Name</string></property></column>
+     <column><property name="text"><string>Metric</string></property></column>
+     <column><property name="text"><string>Operator</string></property></column>
+     <column><property name="text"><string>Value (%)</string></property></column>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout">
+     <item><widget class="QPushButton" name="btn_up"><property name="text"><string>Move Up</string></property></widget></item>
+     <item><widget class="QPushButton" name="btn_down"><property name="text"><string>Move Down</string></property></widget></item>
+     <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+     <item><widget class="QPushButton" name="btn_add"><property name="text"><string>+ Add Rule</string></property></widget></item>
+     <item><widget class="QPushButton" name="btn_delete"><property name="text"><string>- Delete Rule</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_2">
+     <item><widget class="QPushButton" name="btn_edit_templates"><property name="text"><string>Edit Templates</string></property></widget></item>
+     <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+     <item>
+      <widget class="QDialogButtonBox" name="buttonBox">
+       <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Save</set></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>ProgressLogicDialog</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>ProgressLogicDialog</receiver>
+   <slot>reject()</slot>
+  </connection>
+ </connections>
+</ui>
