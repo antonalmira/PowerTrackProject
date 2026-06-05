@@ -2,9 +2,10 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem, QHeaderView, QApplication, QDialog,
     QComboBox, QCheckBox, QMessageBox, QMenu, QWidgetAction,
     QFileDialog, QLineEdit, QDoubleSpinBox, QTableWidget,
+    QTableView, QStyledItemDelegate
 )
-from PyQt5.QtGui import QStandardItemModel, QStandardItem, QColor
-from PyQt5.QtCore import Qt, QSettings, pyqtSignal, QThread
+from PyQt5.QtGui import QStandardItemModel, QStandardItem, QColor, QBrush
+from PyQt5.QtCore import Qt, QSettings, pyqtSignal, QThread, QAbstractTableModel, QSortFilterProxyModel
 from PyQt5 import uic
 import pandas as pd
 import sqlite3
@@ -19,8 +20,14 @@ from data_manager import (
 )
 
 # ── Email safety constants ─────────────────────────────────────────────────────
-# FIX: cap the number of recipients per draft and require confirmation.
 MAX_EMAIL_RECIPIENTS = 50
+
+try:
+    import bleach
+    BLEACH_AVAILABLE = True
+except ImportError:
+    BLEACH_AVAILABLE = False
+
 
 # ── Default progress rules ─────────────────────────────────────────────────────
 DEFAULT_RULES = [
@@ -68,12 +75,7 @@ DEFAULT_RULES = [
 
 
 # ── Background worker for progress calculation ─────────────────────────────────
-
 class ProgressWorker(QThread):
-    """
-    FIX: calculate_progress() was blocking the main thread.  Moved to a
-    QThread so the UI remains responsive while files are read.
-    """
     done = pyqtSignal(dict)
     error = pyqtSignal(str)
 
@@ -94,7 +96,6 @@ class ProgressWorker(QThread):
 
 
 # ── Template editor dialog ─────────────────────────────────────────────────────
-
 class TemplateEditorDialog(QDialog):
     def __init__(self, rules, parent=None):
         super().__init__(parent)
@@ -140,7 +141,6 @@ class TemplateEditorDialog(QDialog):
 
 
 # ── Progress logic dialog ──────────────────────────────────────────────────────
-
 class ProgressLogicDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -273,27 +273,21 @@ class ProgressLogicDialog(QDialog):
         self.settings.setValue("progress_rules", json.dumps(self.rules))
 
 
-# ── Multi-select combobox ──────────────────────────────────────────────────────
-
+# ── Multi-select combobox for Delegate ─────────────────────────────────────────
 class CheckableComboBox(QComboBox):
-    selection_changed = pyqtSignal(str, str)
-
-    def __init__(self, user_id, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.user_id = user_id
         self.setModel(QStandardItemModel(self))
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
         self.lineEdit().setAlignment(Qt.AlignCenter)
         self.view().pressed.connect(self.handle_item_pressed)
-        self._changed = False
 
     def handle_item_pressed(self, index):
         item = self.model().itemFromIndex(index)
         item.setCheckState(
             Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked
         )
-        self._changed = True
         self.update_text()
 
     def set_items(self, items, checked_items):
@@ -307,7 +301,6 @@ class CheckableComboBox(QComboBox):
             )
             self.model().appendRow(item)
         self.update_text()
-        self._changed = False
 
     def update_text(self):
         checked = [
@@ -319,15 +312,175 @@ class CheckableComboBox(QComboBox):
         self.lineEdit().setText(text)
         return text
 
-    def hidePopup(self):
-        super().hidePopup()
-        if self._changed:
-            self.selection_changed.emit(self.user_id, self.update_text())
-            self._changed = False
+
+# ── Delegates for QTableView ───────────────────────────────────────────────────
+class OrgDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        combo = QComboBox(parent)
+        combo.addItems(["FAE", "Sales", "Unknown"])
+        return combo
+
+    def setEditorData(self, editor, index):
+        value = index.model().data(index, Qt.EditRole)
+        idx = editor.findText(value)
+        if idx >= 0:
+            editor.setCurrentIndex(idx)
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.currentText(), Qt.EditRole)
+
+
+class ControlCodeDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        return CheckableComboBox(parent)
+
+    def setEditorData(self, editor, index):
+        val_str = index.model().data(index, Qt.EditRole)
+        checked_codes = [c.strip() for c in val_str.split(",")] if val_str and val_str != "N/A" else []
+        editor.set_items(["Low & Mid Power", "High Power", "Automotive", "Motor Driver"], checked_codes)
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.lineEdit().text(), Qt.EditRole)
+
+
+# ── Models for UI Virtualization ───────────────────────────────────────────────
+class StudentTableModel(QAbstractTableModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.headers = [
+            "Name", "Email", "Location", "Title", "Manager",
+            "Organization", "Control Code", "Avg. Completion", "Progress"
+        ]
+        self._data = []
+
+    def rowCount(self, parent=None):
+        return len(self._data)
+
+    def columnCount(self, parent=None):
+        return len(self.headers)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        
+        row, col = index.row(), index.column()
+        
+        if role == Qt.DisplayRole or role == Qt.EditRole:
+            return str(self._data[row][col])
+        elif role == Qt.TextAlignmentRole:
+            if col >= 1: 
+                return Qt.AlignCenter | Qt.AlignVCenter
+            return Qt.AlignLeft | Qt.AlignVCenter
+        elif role == Qt.UserRole: 
+            # Custom role for accessing hidden data used in database updates & filtering
+            if col == 0: return self._data[row][9]  # User ID
+            if col == 2: return self._data[row][10] # Region Bucket
+            if col == 8: return self._data[row][8]  # Exact Progress String
+        return None
+
+    def setData(self, index, value, role=Qt.EditRole):
+        if index.isValid() and role == Qt.EditRole:
+            row, col = index.row(), index.column()
+            old_val = str(self._data[row][col])
+            new_val = str(value).strip()
+            
+            if old_val == new_val:
+                return False
+                
+            self._data[row][col] = new_val
+            user_id = self._data[row][9]
+            
+            ALLOWED_SINGLE_COLS = {1: "email", 3: "title", 4: "manager"}
+
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                if col == 0:
+                    parts = new_val.split(" ", 1)
+                    cursor.execute(
+                        "UPDATE students SET first_name=?, last_name=? WHERE user_id=?",
+                        (parts[0], parts[1] if len(parts) > 1 else "", user_id),
+                    )
+                elif col == 2:
+                    new_region = parse_region(new_val)
+                    self._data[row][10] = new_region
+                    cursor.execute(
+                        "UPDATE students SET location=?, region_bucket=? WHERE user_id=?",
+                        (new_val, new_region, user_id),
+                    )
+                elif col == 5:
+                    cursor.execute(
+                        "UPDATE students SET organization=? WHERE user_id=?",
+                        (new_val, user_id),
+                    )
+                elif col == 6:
+                    cursor.execute(
+                        "UPDATE students SET control_codes=? WHERE user_id=?",
+                        (new_val, user_id),
+                    )
+                elif col in ALLOWED_SINGLE_COLS:
+                    col_name = ALLOWED_SINGLE_COLS[col]
+                    cursor.execute(
+                        f"UPDATE students SET {col_name}=? WHERE user_id=?",
+                        (new_val, user_id),
+                    )
+                    
+            self.dataChanged.emit(index, index, [Qt.DisplayRole, Qt.EditRole])
+            return True
+        return False
+
+    def flags(self, index):
+        if not index.isValid():
+            return Qt.NoItemFlags
+        flags = Qt.ItemIsSelectable | Qt.ItemIsEnabled
+        if index.column() not in (7, 8): # Progress and Avg completion are read-only
+            flags |= Qt.ItemIsEditable
+        return flags
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            return self.headers[section]
+        return None
+
+    def update_data(self, new_data):
+        self.beginResetModel()
+        self._data = new_data
+        self.endResetModel()
+
+
+class StudentFilterProxyModel(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.search_text = ""
+        self.target_region = "All Regions"
+        self.target_progress = "All Status"
+
+    def set_filters(self, search, region, progress):
+        self.search_text = search.lower()
+        self.target_region = region
+        self.target_progress = progress
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        
+        name_idx = model.index(source_row, 0, source_parent)
+        email_idx = model.index(source_row, 1, source_parent)
+        loc_idx = model.index(source_row, 2, source_parent)
+        prog_idx = model.index(source_row, 8, source_parent)
+
+        name = model.data(name_idx).lower()
+        email = model.data(email_idx).lower()
+        region = model.data(loc_idx, Qt.UserRole)
+        progress = model.data(prog_idx, Qt.UserRole)
+
+        match_search = (self.search_text in name) or (self.search_text in email)
+        match_region = (self.target_region == "All Regions" or region == self.target_region)
+        match_progress = (self.target_progress == "All Status" or progress == self.target_progress)
+
+        return match_search and match_region and match_progress
 
 
 # ── Main student tab component ─────────────────────────────────────────────────
-
 class StudentTabComponent:
     def __init__(self, ui_window):
         self.ui                  = ui_window
@@ -375,25 +528,59 @@ class StudentTabComponent:
         if hasattr(self.ui, "btn_email_students"):
             self.ui.btn_email_students.clicked.connect(self.draft_emails)
 
-        self.ui.table_students.itemChanged.connect(self.on_cell_edited)
-
     def setup_table(self):
-        table = self.ui.table_students
-        table.setColumnCount(9)
-        table.setHorizontalHeaderLabels(
-            ["Name", "Email", "Location", "Title", "Manager",
-             "Organization", "Control Code", "Avg. Completion", "Progress"]
-        )
+        # 1. Programmatically replace QTableWidget with QTableView
+        table_widget = self.ui.table_students
+        layout = table_widget.parentWidget().layout()
+        idx = layout.indexOf(table_widget)
+        
+        self.table_view = QTableView()
+        self.table_view.setObjectName("table_students")
+        self.table_view.setAlternatingRowColors(True)
+        self.ui.setStyleSheet(self.ui.styleSheet().replace('QTableWidget {', 'QTableWidget, QTableView {'))
+        
+        layout.insertWidget(idx, self.table_view)
+        table_widget.deleteLater()
+        self.ui.table_students = self.table_view
 
-        header = table.horizontalHeader()
+        # 2. Setup MVC architecture
+        self.model = StudentTableModel(self.ui)
+        self.proxy = StudentFilterProxyModel(self.ui)
+        self.proxy.setSourceModel(self.model)
+        self.table_view.setModel(self.proxy)
+
+        # 3. Setup Delegates for dropdowns
+        self.table_view.setItemDelegateForColumn(5, OrgDelegate(self.ui))
+        self.table_view.setItemDelegateForColumn(6, ControlCodeDelegate(self.ui))
+
+        # 4. Styling and Context Menus
+        header = self.table_view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         header.setContextMenuPolicy(Qt.CustomContextMenu)
         header.customContextMenuRequested.connect(self.show_column_menu)
 
-        table.verticalHeader().setMinimumWidth(50)
+        self.table_view.verticalHeader().setMinimumWidth(50)
         for col, width in enumerate([180, 200, 180, 180, 160, 100, 200, 120]):
-            table.setColumnWidth(col, width)
+            self.table_view.setColumnWidth(col, width)
         header.setStretchLastSection(True)
+        
+        # When cells update, recalculate if Control Code or Org changes
+        self.model.dataChanged.connect(self.on_model_data_changed)
+
+    def on_model_data_changed(self, top_left, bottom_right, roles):
+        if self.is_loading: return
+        col = top_left.column()
+        
+        if col == 5: # Organization changed
+            self.load_students_to_table()
+        elif col == 6: # Control codes changed
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            if (self.base_data_folder and os.path.exists(self.base_data_folder) 
+                    and self.current_data_folder and os.path.exists(self.current_data_folder)):
+                self._start_progress_worker(self.base_data_folder, self.current_data_folder)
+            else:
+                QApplication.restoreOverrideCursor()
+                self.load_students_to_table()
 
     def setup_filters(self):
         self.ui.search_student.textChanged.connect(self.apply_filters)
@@ -410,8 +597,6 @@ class StudentTabComponent:
         )
         unique_categories = list(dict.fromkeys(r["name"] for r in rules))
 
-        # FIX: safe disconnect — only disconnect the specific slot to avoid
-        # disconnecting all receivers; use try/except instead of receiver count.
         try:
             self.ui.combo_progress.currentTextChanged.disconnect(self.apply_filters)
         except TypeError:
@@ -428,36 +613,13 @@ class StudentTabComponent:
     # ── Filters ────────────────────────────────────────────────────────────────
 
     def apply_filters(self):
-        search_text     = self.ui.search_student.text().lower()
-        target_region   = self.ui.combo_region.currentText()
-        target_progress = self.ui.combo_progress.currentText()
-
-        visible_count = 0
-        table = self.ui.table_students
-
-        for row in range(table.rowCount()):
-            # FIX: guard against None cells during partial loads
-            name_item  = table.item(row, 0)
-            email_item = table.item(row, 1)
-            region_item = table.item(row, 2)
-            prog_item  = table.item(row, 8)
-
-            name     = name_item.text().lower()  if name_item  else ""
-            email    = email_item.text().lower() if email_item else ""
-            region   = (region_item.data(Qt.UserRole) or "Worldwide") if region_item else "Worldwide"
-            progress = prog_item.text() if prog_item else ""
-
-            match_search   = (search_text in name) or (search_text in email)
-            match_region   = target_region   == "All Regions" or region   == target_region
-            match_progress = target_progress == "All Status"  or progress == target_progress
-
-            visible = match_search and match_region and match_progress
-            table.setRowHidden(row, not visible)
-            if visible:
-                visible_count += 1
-
+        self.proxy.set_filters(
+            self.ui.search_student.text(),
+            self.ui.combo_region.currentText(),
+            self.ui.combo_progress.currentText()
+        )
         self.ui.lbl_showing.setText(
-            f"Showing {visible_count} of {table.rowCount()} students"
+            f"Showing {self.proxy.rowCount()} of {self.model.rowCount()} students"
         )
 
     def clear_filters(self):
@@ -470,24 +632,23 @@ class StudentTabComponent:
         menu.setStyleSheet(
             "QMenu { background: #202025; color: white; border: 1px solid #3a3a40; }"
         )
-        table = self.ui.table_students
-
-        for c in range(table.columnCount()):
-            text   = table.horizontalHeaderItem(c).text()
+        
+        for c in range(self.model.columnCount()):
+            text = self.model.headerData(c, Qt.Horizontal)
             action = QWidgetAction(menu)
             chk    = QCheckBox(text)
             chk.setStyleSheet(
                 "QCheckBox { padding: 5px; background: transparent; color: white; }"
                 "QCheckBox:hover { background: #0085ca; }"
             )
-            chk.setChecked(not table.isColumnHidden(c))
+            chk.setChecked(not self.table_view.isColumnHidden(c))
             chk.toggled.connect(
-                lambda checked, col=c: table.setColumnHidden(col, not checked)
+                lambda checked, col=c: self.table_view.setColumnHidden(col, not checked)
             )
             action.setDefaultWidget(chk)
             menu.addAction(action)
 
-        menu.exec_(table.horizontalHeader().viewport().mapToGlobal(pos))
+        menu.exec_(self.table_view.horizontalHeader().viewport().mapToGlobal(pos))
 
     # ── Data folder selection ──────────────────────────────────────────────────
 
@@ -533,10 +694,6 @@ class StudentTabComponent:
         return False
 
     def calculate_progress(self, base_folder, update_folder):
-        """
-        Calculates progress labels for all students.
-        NOTE: runs on a background QThread — do NOT touch Qt widgets here.
-        """
         if not base_folder or not os.path.exists(base_folder):
             return {}
 
@@ -735,7 +892,6 @@ class StudentTabComponent:
             dm.import_control_codes(folder_path)
 
             if is_update and self.base_data_folder:
-                # FIX: run on background thread so the UI doesn't freeze
                 self._start_progress_worker(self.base_data_folder, folder_path)
             else:
                 self.load_students_to_table()
@@ -788,17 +944,24 @@ class StudentTabComponent:
                 "Run:  pip install pywin32",
             )
             return
+            
+        if not BLEACH_AVAILABLE:
+            QMessageBox.warning(
+                self.ui, "Security Warning", 
+                "The HTML sanitization library 'bleach' is not installed. Sending HTML emails without it is disabled to prevent security vulnerabilities.\n\nRun: pip install bleach"
+            )
+            return
 
-        table = self.ui.table_students
         category_emails = {}
 
-        for row in range(table.rowCount()):
-            if table.isRowHidden(row):
-                continue
-            email_item = table.item(row, 1)
-            prog_item  = table.item(row, 8)
-            email    = email_item.text() if email_item else ""
-            progress = prog_item.text()  if prog_item  else ""
+        # Fetch currently visible rows using the Proxy Model
+        for row in range(self.proxy.rowCount()):
+            idx = self.proxy.index(row, 0)
+            src_idx = self.proxy.mapToSource(idx)
+            src_row = src_idx.row()
+            
+            email = self.model._data[src_row][1]
+            progress = self.model._data[src_row][8]
 
             if email and email != "N/A" and "@" in email:
                 category_emails.setdefault(progress, []).append(email)
@@ -810,7 +973,6 @@ class StudentTabComponent:
             )
             return
 
-        # FIX: count total recipients and require explicit confirmation
         total_recipients = sum(len(v) for v in category_emails.values())
         confirm = QMessageBox.question(
             self.ui,
@@ -847,11 +1009,15 @@ class StudentTabComponent:
             ),
         }
 
+        # Security: Allowed HTML tags and styles for emails
+        allowed_tags = ['b', 'i', 'u', 'br', 'a', 'p', 'span', 'strong', 'em', 'ul', 'ol', 'li']
+        allowed_attrs = {'*': ['style'], 'a': ['href', 'title']}
+        allowed_styles = ['color', 'background-color', 'font-size', 'font-family', 'text-align']
+
         drafts_created = 0
         capped_categories = []
 
         for category, emails in category_emails.items():
-            # FIX: cap recipients per draft to MAX_EMAIL_RECIPIENTS
             if len(emails) > MAX_EMAIL_RECIPIENTS:
                 capped_categories.append(
                     f"'{category}': {len(emails)} → capped at {MAX_EMAIL_RECIPIENTS}"
@@ -862,11 +1028,15 @@ class StudentTabComponent:
             mail.BCC      = "; ".join(emails)
             tmpl          = templates.get(category, default_template)
             mail.Subject  = tmpl["subject"]
-            mail.HTMLBody = tmpl["body"]
+            
+            # HTML Sanitization Process
+            safe_html = bleach.clean(tmpl["body"], tags=allowed_tags, attributes=allowed_attrs, styles=allowed_styles)
+            mail.HTMLBody = safe_html
+            
             mail.Display(False)
             drafts_created += 1
 
-        msg = f"Successfully opened {drafts_created} draft(s) in Outlook."
+        msg = f"Successfully opened {drafts_created} sanitized draft(s) in Outlook."
         if capped_categories:
             msg += "\n\nRecipient cap applied:\n" + "\n".join(capped_categories)
         QMessageBox.information(self.ui, "Success", msg)
@@ -898,6 +1068,7 @@ class StudentTabComponent:
             return cursor.fetchall()
 
     def load_students_to_table(self):
+        self.is_loading = True
         try:
             self.progress_dict = json.loads(
                 self.settings.value("progress_dict", "{}")
@@ -905,10 +1076,8 @@ class StudentTabComponent:
         except Exception:
             self.progress_dict = {}
 
-        self.is_loading  = True
-        all_students     = self.get_all_students()
+        all_students = self.get_all_students()
 
-        # FIX: filter completions at the SQL level instead of loading everything
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT course_id, control_code FROM courses")
@@ -928,10 +1097,9 @@ class StudentTabComponent:
                 uid_str = normalize_uid(uid)
                 completions_map.setdefault(uid_str, {})[str(cid)] = safe_float(pct)
 
-        self.ui.table_students.setRowCount(0)
-        self.ui.table_students.setRowCount(len(all_students))
+        table_data = []
 
-        for row_idx, student_data in enumerate(all_students):
+        for student_data in all_students:
             user_id, name, email, location, organization, title, manager, region_bucket, control_codes = student_data
 
             uid_str  = normalize_uid(user_id)
@@ -951,88 +1119,28 @@ class StudentTabComponent:
                 )
                 avg_comp_str = f"{(total_pct / len(my_req_courses)):.1f}%"
 
-            row_values = [
-                name, email, location, title, manager,
-                organization, control_codes,
-                avg_comp_str,
+            table_data.append([
+                name or "N/A", 
+                email or "N/A", 
+                location or "N/A", 
+                title or "N/A", 
+                manager or "N/A",
+                organization or "Unknown", 
+                control_codes or "N/A", 
+                avg_comp_str, 
                 self.progress_dict.get(uid_str, "N/A"),
-            ]
+                user_id,         # Index 9: hidden raw user_id for updates
+                region_bucket    # Index 10: hidden raw region_bucket for filtering
+            ])
 
-            for col_idx, value in enumerate(row_values):
-                val_str = str(value) if value and str(value) != "nan" else "N/A"
-
-                if col_idx == 5:
-                    combo = QComboBox()
-                    combo.addItems(["FAE", "Sales", "Unknown"])
-                    combo.setCurrentText(val_str)
-                    combo.currentTextChanged.connect(
-                        lambda text, uid=user_id: self.update_student_org(uid, text)
-                    )
-                    self.ui.table_students.setCellWidget(row_idx, col_idx, combo)
-                    continue
-
-                if col_idx == 6:
-                    combo = CheckableComboBox(uid_str)
-                    all_codes    = ["Low & Mid Power", "High Power", "Automotive", "Motor Driver"]
-                    checked_codes = (
-                        [c.strip() for c in val_str.split(",")]
-                        if val_str != "N/A" else []
-                    )
-                    combo.set_items(all_codes, checked_codes)
-                    combo.selection_changed.connect(self.update_student_codes)
-                    self.ui.table_students.setCellWidget(row_idx, col_idx, combo)
-                    continue
-
-                item = QTableWidgetItem(val_str)
-                if col_idx >= 1:
-                    item.setTextAlignment(Qt.AlignCenter)
-                item.setFlags(
-                    Qt.ItemIsSelectable | Qt.ItemIsEnabled
-                    | (Qt.ItemIsEditable if col_idx not in (7, 8) else Qt.NoItemFlags)
-                )
-
-                if col_idx == 0:
-                    item.setData(Qt.UserRole, user_id)
-                elif col_idx == 2:
-                    item.setData(Qt.UserRole, region_bucket)
-
-                self.ui.table_students.setItem(row_idx, col_idx, item)
-
+        self.model.update_data(table_data)
         self.update_tab_counts(all_students)
         self.apply_filters()
         self.is_loading = False
 
-    # ── Cell / widget change handlers ──────────────────────────────────────────
-
-    def update_student_org(self, user_id, new_org):
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.cursor().execute(
-                "UPDATE students SET organization=? WHERE user_id=?",
-                (new_org, user_id),
-            )
-        if new_org != self.current_org_filter:
-            self.load_students_to_table()
-
-    def update_student_codes(self, user_id, new_codes_str):
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.cursor().execute(
-                "UPDATE students SET control_codes=? WHERE user_id=?",
-                (new_codes_str, user_id),
-            )
-
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        if (self.base_data_folder and os.path.exists(self.base_data_folder)
-                and self.current_data_folder and os.path.exists(self.current_data_folder)):
-            self._start_progress_worker(
-                self.base_data_folder, self.current_data_folder
-            )
-        else:
-            QApplication.restoreOverrideCursor()
-            self.load_students_to_table()
 
     def update_tab_counts(self, all_students):
         total    = len(all_students)
-        # FIX: internal-domain check uses configurable INTERNAL_DOMAINS list
         internal = sum(
             1 for s in all_students
             if any(d in str(s[2]).lower() for d in INTERNAL_DOMAINS)
@@ -1040,58 +1148,3 @@ class StudentTabComponent:
         self.ui.lbl_total.setText(f"<b>Total:</b> {total}")
         self.ui.lbl_internal.setText(f"Internal: {internal}")
         self.ui.lbl_external.setText(f"External: {total - internal}")
-
-    # ── Inline cell editing ────────────────────────────────────────────────────
-
-    def on_cell_edited(self, item):
-        if self.is_loading:
-            return
-
-        row       = item.row()
-        col       = item.column()
-        new_value = item.text().strip()
-
-        name_item = self.ui.table_students.item(row, 0)
-        user_id   = name_item.data(Qt.UserRole) if name_item else None
-        if user_id is None:
-            return
-
-        # FIX: explicit allowlist for column names — prevents SQL injection if
-        # col_map is ever extended with externally sourced values.
-        ALLOWED_SINGLE_COLS = {"email", "title", "manager"}
-
-        col_map = {
-            0: ("split_name",),
-            1: ("email",),
-            2: ("location",),
-            3: ("title",),
-            4: ("manager",),
-        }
-        db_columns = col_map.get(col)
-        if not db_columns:
-            return
-
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            if col == 0:
-                parts = new_value.split(" ", 1)
-                cursor.execute(
-                    "UPDATE students SET first_name=?, last_name=? WHERE user_id=?",
-                    (parts[0], parts[1] if len(parts) > 1 else "", user_id),
-                )
-            elif col == 2:
-                cursor.execute(
-                    "UPDATE students SET location=?, region_bucket=? WHERE user_id=?",
-                    (new_value, parse_region(new_value), user_id),
-                )
-            else:
-                col_name = db_columns[0]
-                if col_name not in ALLOWED_SINGLE_COLS:
-                    return  # safety: reject unknown columns
-                cursor.execute(
-                    f"UPDATE students SET {col_name}=? WHERE user_id=?",
-                    (new_value, user_id),
-                )
-
-        if col == 2:
-            self.load_students_to_table()

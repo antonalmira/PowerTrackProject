@@ -1,10 +1,10 @@
 from PyQt5.QtWidgets import (
     QTableWidgetItem, QApplication, QDialog, QCheckBox,
     QMessageBox, QTableWidget, QFileDialog, QMenu, QWidgetAction,
-    QTreeWidgetItem,
+    QTreeWidgetItem, QTableView, QHeaderView
 )
 from PyQt5.QtGui import QColor, QBrush
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QAbstractTableModel, QSortFilterProxyModel
 from PyQt5 import uic
 import sqlite3
 import pandas as pd
@@ -12,6 +12,8 @@ from database import DB_PATH
 from data_manager import safe_float, normalize_uid
 import os
 
+
+# ── Course Mapping Dialog ──────────────────────────────────────────────────────
 
 class CourseMappingDialog(QDialog):
     def __init__(self, current_org_filter, parent=None):
@@ -33,8 +35,6 @@ class CourseMappingDialog(QDialog):
 
         self.setup_tree_structure()
         self.load_data()
-
-    # ── Drag-and-drop handlers ─────────────────────────────────────────────────
 
     def tree_drop_event(self, event):
         source      = event.source()
@@ -75,16 +75,13 @@ class CourseMappingDialog(QDialog):
             event.accept()
         elif source == self.tree_categories:
             for item in source.selectedItems():
-                if (item.parent() is not None
-                        and item.parent().parent() is not None):
+                if (item.parent() is not None and item.parent().parent() is not None):
                     self.list_unassigned.addItem(item.text(0))
                     item.parent().takeChild(item.parent().indexOfChild(item))
             event.setDropAction(Qt.CopyAction)
             event.accept()
         else:
             event.ignore()
-
-    # ── Tree setup ─────────────────────────────────────────────────────────────
 
     def setup_tree_structure(self):
         structure = {
@@ -101,13 +98,9 @@ class CourseMappingDialog(QDialog):
                 cat_node.setFlags(Qt.ItemIsEnabled | Qt.ItemIsDropEnabled)
         self.tree_categories.expandAll()
 
-    # ── Data loading ───────────────────────────────────────────────────────────
-
     def load_data(self):
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
-            # FIX: parameterised query — filter value is no longer interpolated
-            # directly into the SQL string.
             if self.course_filter == "FAE":
                 cursor.execute(
                     "SELECT course_id, course_name, control_code, graph_category "
@@ -137,12 +130,8 @@ class CourseMappingDialog(QDialog):
                                 if child.text(0) == gc:
                                     course_node = QTreeWidgetItem(child, [item_text])
                                     course_node.setFlags(
-                                        Qt.ItemIsEnabled
-                                        | Qt.ItemIsSelectable
-                                        | Qt.ItemIsDragEnabled
+                                        Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled
                                     )
-
-    # ── Delete / save ──────────────────────────────────────────────────────────
 
     def delete_selected_courses(self):
         courses_to_delete = []
@@ -151,8 +140,7 @@ class CourseMappingDialog(QDialog):
             courses_to_delete.append((item.text(), "list", item))
 
         for item in self.tree_categories.selectedItems():
-            if (item.parent() is not None
-                    and item.parent().parent() is not None):
+            if (item.parent() is not None and item.parent().parent() is not None):
                 courses_to_delete.append((item.text(0), "tree", item))
 
         if not courses_to_delete:
@@ -162,15 +150,11 @@ class CourseMappingDialog(QDialog):
             )
             return
 
-        if (
-            QMessageBox.question(
+        if (QMessageBox.question(
                 self, "Confirm Delete",
                 f"Permanently delete {len(courses_to_delete)} course(s)?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            == QMessageBox.Yes
-        ):
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes):
+            
             ids = []
             for text, src_type, item in courses_to_delete:
                 course_id = text.rsplit("[", 1)[-1].replace("]", "").strip()
@@ -182,7 +166,7 @@ class CourseMappingDialog(QDialog):
 
             with sqlite3.connect(DB_PATH) as conn:
                 conn.executemany(
-                    "DELETE FROM courses     WHERE course_id=?",
+                    "DELETE FROM courses WHERE course_id=?",
                     [(i,) for i in ids],
                 )
                 conn.executemany(
@@ -197,7 +181,6 @@ class CourseMappingDialog(QDialog):
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
-            # Reset only the filtered set
             if self.course_filter == "FAE":
                 cursor.execute(
                     "UPDATE courses SET control_code='Unassigned', graph_category='Unassigned' "
@@ -233,6 +216,82 @@ class CourseMappingDialog(QDialog):
         self.accept()
 
 
+# ── Models for UI Virtualization ───────────────────────────────────────────────
+
+class MatrixTableModel(QAbstractTableModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data = []
+        
+        self.color_green  = QColor(0, 176, 80)
+        self.color_yellow = QColor(255, 255, 0)
+        self.color_red    = QColor(255, 0, 0)
+        self.color_gray   = QColor(100, 100, 100)
+        self.bg_color_table = QColor("#121214")
+
+    def rowCount(self, parent=None): 
+        return len(self._data)
+        
+    def columnCount(self, parent=None): 
+        return len(self._data[0]) if self._data else 0
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid(): 
+            return None
+            
+        row, col = index.row(), index.column()
+        cell = self._data[row][col]
+
+        if role == Qt.DisplayRole:
+            return str(cell["text"])
+        elif role == Qt.TextAlignmentRole:
+            return Qt.AlignCenter | Qt.AlignVCenter if col >= 1 else Qt.AlignLeft | Qt.AlignVCenter
+        elif role == Qt.BackgroundRole:
+            if col >= 5 and cell.get("bg"): return QBrush(cell["bg"])
+            return QBrush(self.bg_color_table)
+        elif role == Qt.ForegroundRole:
+            if col >= 5 and cell.get("fg"): return QBrush(cell["fg"])
+            return QBrush(Qt.white)
+        elif role == Qt.UserRole: 
+            if col == 0: return cell.get("codes", "")
+            if col == 2: return cell.get("region", "")
+            
+        return None
+
+    def update_data(self, new_data):
+        self.beginResetModel()
+        self._data = new_data
+        self.endResetModel()
+
+
+class MatrixFilterProxyModel(QSortFilterProxyModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.search_txt = ""
+        self.target_region = "All Regions"
+        self.target_code = "All Codes"
+
+    def set_filters(self, search, region, code):
+        self.search_txt = search.lower()
+        self.target_region = region
+        self.target_code = code
+        self.invalidateFilter()
+
+    def filterAcceptsRow(self, source_row, source_parent):
+        model = self.sourceModel()
+        
+        name = model.data(model.index(source_row, 0, source_parent)).lower()
+        email = model.data(model.index(source_row, 1, source_parent)).lower()
+        region = model.data(model.index(source_row, 2, source_parent), Qt.UserRole)
+        codes = model.data(model.index(source_row, 0, source_parent), Qt.UserRole)
+
+        match_search = (self.search_txt in name) or (self.search_txt in email)
+        match_region = (self.target_region == "All Regions" or region == self.target_region)
+        match_code   = (self.target_code == "All Codes" or self.target_code in codes)
+
+        return match_search and match_region and match_code
+
+
 # ── Matrix tab component ───────────────────────────────────────────────────────
 
 class MatrixTabComponent:
@@ -247,11 +306,47 @@ class MatrixTabComponent:
         self.ui.btn_refresh_matrix.clicked.connect(self.open_mapping_manager)
         self.ui.btn_clear_matrix.clicked.connect(self.export_matrix_to_excel)
 
-        self.ui.header_table.horizontalHeader().setVisible(False)
-        self.ui.table_matrix.horizontalHeader().setVisible(False)
+        # ── Replace table_matrix with QTableView for Virtualization ──
+        table_widget = self.ui.table_matrix
+        layout = self.ui.layout_matrix_tables  # Targeting correct nested layout
+        idx = layout.indexOf(table_widget)
+        
+        self.table_view = QTableView()
+        self.table_view.setObjectName("table_matrix")
+        self.table_view.horizontalHeader().setVisible(False)
+        self.table_view.verticalHeader().setFixedWidth(50)
+        
+        # Apply dark theme styling to QTableView
+        new_style = self.ui.styleSheet().replace('QTableWidget {', 'QTableWidget, QTableView {')
+        self.ui.setStyleSheet(new_style)
+        
+        layout.insertWidget(idx, self.table_view)
+        table_widget.deleteLater()
+        self.ui.table_matrix = self.table_view
 
+        # Setup MVC Model
+        self.model = MatrixTableModel(self.ui)
+        self.proxy = MatrixFilterProxyModel(self.ui)
+        self.proxy.setSourceModel(self.model)
+        self.ui.table_matrix.setModel(self.proxy)
+
+        # ── Configure Header Table ──
         self.ui.header_table.verticalHeader().setFixedWidth(50)
-        self.ui.table_matrix.verticalHeader().setFixedWidth(50)
+        
+        # Make Custom Header read-only
+        self.ui.header_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        
+        # Disable vertical scroll on custom header
+        self.ui.header_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.ui.header_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # Enable resizing via native horizontal header
+        hh = self.ui.header_table.horizontalHeader()
+        hh.setVisible(True)
+        hh.setSectionResizeMode(QHeaderView.Interactive)
+        hh.sectionResized.connect(
+            lambda logicalIndex, oldSize, newSize: self.table_view.setColumnWidth(logicalIndex, newSize)
+        )
 
         self.ui.table_matrix.horizontalScrollBar().valueChanged.connect(
             self.ui.header_table.horizontalScrollBar().setValue
@@ -331,7 +426,7 @@ class MatrixTabComponent:
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             cols = self.ui.header_table.columnCount()
-            rows = self.ui.table_matrix.rowCount()
+            rows = self.proxy.rowCount()
 
             row0, row1, row2 = [], [], []
             curr_cc, curr_gc = "", ""
@@ -354,12 +449,10 @@ class MatrixTabComponent:
 
             data = []
             for r in range(rows):
-                if self.ui.table_matrix.isRowHidden(r):
-                    continue
                 row_data = []
                 for c in range(cols):
-                    item = self.ui.table_matrix.item(r, c)
-                    row_data.append(item.text() if item else "")
+                    idx = self.proxy.index(r, c)
+                    row_data.append(self.proxy.data(idx, Qt.DisplayRole))
                 data.append(row_data)
 
             df = pd.DataFrame(
@@ -404,33 +497,11 @@ class MatrixTabComponent:
         self.ui.search_matrix.textChanged.connect(self.apply_filters)
 
     def apply_filters(self):
-        search_txt    = self.ui.search_matrix.text().lower()
-        target_region = self.ui.combo_matrix_region.currentText()
-        target_code   = self.ui.combo_matrix_code.currentText()
-
-        table = self.ui.table_matrix
-        for row in range(table.rowCount()):
-            # FIX: guard every item access against None (partial loads / clears)
-            name_item   = table.item(row, 0)
-            email_item  = table.item(row, 1)
-            region_item = table.item(row, 2)
-
-            name   = name_item.text().lower()   if name_item   else ""
-            email  = email_item.text().lower()  if email_item  else ""
-            region = (
-                (region_item.data(Qt.UserRole) or "Worldwide")
-                if region_item else "Worldwide"
-            )
-            assigned_codes = (
-                name_item.data(Qt.UserRole + 1) or ""
-                if name_item else ""
-            )
-
-            match_search = (search_txt in name) or (search_txt in email)
-            match_region = target_region == "All Regions" or region == target_region
-            match_code   = target_code   == "All Codes"   or target_code in assigned_codes
-
-            table.setRowHidden(row, not (match_search and match_region and match_code))
+        self.proxy.set_filters(
+            self.ui.search_matrix.text(),
+            self.ui.combo_matrix_region.currentText(),
+            self.ui.combo_matrix_code.currentText()
+        )
 
     # ── Tab change ─────────────────────────────────────────────────────────────
 
@@ -444,9 +515,6 @@ class MatrixTabComponent:
         with sqlite3.connect(DB_PATH) as conn:
             cursor = conn.cursor()
 
-            # FIX: f-string SQL replaced with parameterised query +
-            # an explicit allowlist check, so current_org_filter can never
-            # inject SQL even if its source changes in the future.
             ALLOWED_ORGS = {"FAE", "Sales", "Unknown"}
             if self.current_org_filter not in ALLOWED_ORGS:
                 raise ValueError(
@@ -490,8 +558,6 @@ class MatrixTabComponent:
             )
             students = cursor.fetchall()
 
-            # FIX: filter completions to only this org — avoids loading the
-            # entire completions table into memory on every tab switch.
             cursor.execute(
                 """
                 SELECT c.user_id, c.course_id, c.percent_complete
@@ -514,42 +580,40 @@ class MatrixTabComponent:
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             courses, students, completions_map = self.fetch_matrix_data()
-            table        = self.ui.table_matrix
             header_table = self.ui.header_table
 
-            table.setUpdatesEnabled(False)
             header_table.setUpdatesEnabled(False)
-            table.clear()
             header_table.clear()
 
             base_headers = ["Name", "Email", "Location", "Title", "Manager"]
             total_cols   = len(base_headers) + len(courses)
 
-            table.setColumnCount(total_cols)
-            table.setRowCount(len(students))
             header_table.setColumnCount(total_cols)
             header_table.setRowCount(3)
 
             for r in range(3):
                 header_table.setVerticalHeaderItem(r, QTableWidgetItem(""))
 
+            # Make native header empty labels so it looks like a clean resize bar
+            for c in range(total_cols):
+                header_table.setHorizontalHeaderItem(c, QTableWidgetItem(""))
+
             col_widths = [180, 240, 210, 210, 150]
             for i in range(len(base_headers)):
-                table.setColumnWidth(i, col_widths[i])
                 header_table.setColumnWidth(i, col_widths[i])
-
             for i in range(5, total_cols):
-                table.setColumnWidth(i, 130)
                 header_table.setColumnWidth(i, 130)
 
             header_table.setRowHeight(0, 26)
             header_table.setRowHeight(1, 26)
             header_table.setRowHeight(2, 45)
-            header_table.setFixedHeight(26 + 26 + 45 + 2)
+            
+            # Increase FixedHeight to accommodate Native Header (approx 25px) + the 3 Rows + Borders
+            header_table.setFixedHeight(130)
 
-            font_bold = table.font()
+            font_bold = header_table.font()
             font_bold.setBold(True)
-            font_small = table.font()
+            font_small = header_table.font()
             font_small.setPointSize(9)
 
             for col_idx, text in enumerate(base_headers):
@@ -604,12 +668,9 @@ class MatrixTabComponent:
                 if (last_col - gc_start_col) > 1:
                     header_table.setSpan(1, gc_start_col, 1, last_col - gc_start_col)
 
-            color_green  = QColor(0, 176, 80)
-            color_yellow = QColor(255, 255, 0)
-            color_red    = QColor(255, 0, 0)
-            color_gray   = QColor(100, 100, 100)
-
-            for row_idx, student in enumerate(students):
+            # Generate the virtualized data structure
+            table_data = []
+            for student in students:
                 user_id, name, email, location, title, manager, student_codes, region_bucket = student
                 student_codes_list = (
                     [c.strip() for c in student_codes.split(",")]
@@ -617,43 +678,39 @@ class MatrixTabComponent:
                 )
                 uid_norm = normalize_uid(user_id)
 
-                for col_idx, value in enumerate(
-                    [name, email, location, title, manager]
-                ):
-                    item = QTableWidgetItem(str(value) if value else "N/A")
-                    if col_idx >= 1:
-                        item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                    if col_idx == 0:
-                        item.setData(Qt.UserRole,     user_id)
-                        item.setData(Qt.UserRole + 1, student_codes or "")
-                    elif col_idx == 2:
-                        item.setData(Qt.UserRole, region_bucket)
-                    table.setItem(row_idx, col_idx, item)
+                row_cells = []
+                # Add base columns with hidden filter metadata
+                row_cells.append({"text": name or "N/A", "codes": student_codes or ""})
+                row_cells.append({"text": email or "N/A"})
+                row_cells.append({"text": location or "N/A", "region": region_bucket or "Worldwide"})
+                row_cells.append({"text": title or "N/A"})
+                row_cells.append({"text": manager or "N/A"})
 
                 user_completions = completions_map.get(uid_norm, {})
-                for i, (course_id, _, course_control_code, _) in enumerate(courses):
-                    col_idx = 5 + i
+                for course_id, _, course_control_code, _ in courses:
                     pct = user_completions.get(course_id, 0.0)
 
                     if (course_control_code == "Unassigned"
                             or course_control_code not in student_codes_list):
-                        cell_text, bg_color, text_color = "N/A",  None,         color_gray
+                        row_cells.append({"text": "N/A", "bg": None, "fg": self.model.color_gray})
                     elif pct >= 100.0:
-                        cell_text, bg_color, text_color = "1.00", color_green,  Qt.black
+                        row_cells.append({"text": "1.00", "bg": self.model.color_green, "fg": Qt.black})
                     elif pct > 0.0:
-                        cell_text, bg_color, text_color = "0.01", color_yellow, Qt.black
+                        row_cells.append({"text": "0.01", "bg": self.model.color_yellow, "fg": Qt.black})
                     else:
-                        cell_text, bg_color, text_color = "0.00", color_red,    Qt.white
+                        row_cells.append({"text": "0.00", "bg": self.model.color_red, "fg": Qt.white})
 
-                    item = QTableWidgetItem(cell_text)
-                    item.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
-                    if bg_color:
-                        item.setBackground(QBrush(bg_color))
-                    item.setForeground(QBrush(text_color))
-                    table.setItem(row_idx, col_idx, item)
+                table_data.append(row_cells)
+
+            # Push data to model and set columns for the View
+            self.model.update_data(table_data)
+            
+            for i in range(len(base_headers)):
+                self.ui.table_matrix.setColumnWidth(i, col_widths[i])
+            for i in range(5, total_cols):
+                self.ui.table_matrix.setColumnWidth(i, 130)
 
             self.apply_filters()
         finally:
-            table.setUpdatesEnabled(True)
             header_table.setUpdatesEnabled(True)
             QApplication.restoreOverrideCursor()

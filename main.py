@@ -49,8 +49,17 @@ class MainWindow(QMainWindow):
         if index == 2: self.analytics_tab.update_data()
 
     def toggle_maximize(self):
-        if self.isMaximized(): self.showNormal()
-        else: self.showMaximized()
+        if self.windowState() == Qt.WindowMaximized:
+            self.setWindowState(Qt.WindowNoState)
+        else:
+            # Get the screen the app is currently on
+            screen = QApplication.desktop().screenNumber(self)
+            # Find the available space (which explicitly subtracts the Windows Taskbar)
+            available_geom = QApplication.desktop().availableGeometry(screen)
+            
+            # Restrict the app from growing larger than the space minus the taskbar
+            self.setMaximumSize(available_geom.size())
+            self.setWindowState(Qt.WindowMaximized)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

@@ -37,6 +37,8 @@
     
     /* Global TabWidget / TabBar (Forced explicit sizing for Analytics and Matrix sub-tabs) */
     QTabWidget::pane { border: none; background: transparent; }
+    QTabBar { qproperty-expanding: 1; }
+    QTabWidget::tab-bar { left: 0px; right: 0px; alignment: center; }
     QTabBar::tab { 
         background: #202025; 
         color: #777777; 
@@ -45,7 +47,6 @@
         font-size: 14px; 
         min-width: 120px;
         min-height: 20px;
-        margin-right: 2px;
     }
     QTabBar::tab:selected { background: #0085ca; color: white; border: 1px solid #0085ca; font-weight: bold; }
     QTabBar::tab:hover:!selected { background: #2a2a30; }
@@ -254,6 +255,9 @@
              <property name="margin"><number>0</number></property>
              <item>
               <widget class="QTabWidget" name="tabWidget_analytics">
+               <property name="documentMode">
+                <bool>true</bool>
+               </property>
                
                <!-- FAE ANALYTICS TAB -->
                <widget class="QWidget" name="tab_ana_fae">
@@ -262,6 +266,9 @@
                  <property name="margin"><number>0</number></property>
                  <item>
                   <widget class="QTabWidget" name="tab_fae">
+                   <property name="documentMode">
+                    <bool>true</bool>
+                   </property>
                    <widget class="QWidget" name="tab_fae_table">
                     <attribute name="title"><string>Table</string></attribute>
                     <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
@@ -292,6 +299,9 @@
                  <property name="margin"><number>0</number></property>
                  <item>
                   <widget class="QTabWidget" name="tab_sales">
+                   <property name="documentMode">
+                    <bool>true</bool>
+                   </property>
                    <widget class="QWidget" name="tab_sales_table">
                     <attribute name="title"><string>Table</string></attribute>
                     <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
@@ -322,6 +332,9 @@
                  <property name="margin"><number>0</number></property>
                  <item>
                   <widget class="QTabWidget" name="tab_summary">
+                   <property name="documentMode">
+                    <bool>true</bool>
+                   </property>
                    <widget class="QWidget" name="tab_summary_table">
                     <attribute name="title"><string>Table</string></attribute>
                     <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>

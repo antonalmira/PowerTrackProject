@@ -2,6 +2,7 @@ import csv
 import io
 import os
 import glob
+import datetime
 
 from PyQt5.QtWidgets import (
     QTableWidgetItem, QHeaderView, QFileDialog, QMessageBox, QApplication,
@@ -32,6 +33,9 @@ class TeamAnalyticsController:
         self.summary_data   = {}
         self.regions        = []
         self.categories     = []
+        
+        # LAZY LOADING FLAG
+        self.is_loaded      = False
 
         self.setup_ui_elements()
         self.btn_export.clicked.connect(self.export_analytics)
@@ -46,8 +50,6 @@ class TeamAnalyticsController:
         self.table.verticalHeader().setDefaultSectionSize(40)
 
         fig_height = 15 if self.team_name == "Summary" else 12
-        # FIX: close any previous figure before creating a new one to prevent
-        # Matplotlib's internal figure list from growing unboundedly.
         if hasattr(self, "figure"):
             plt.close(self.figure)
 
@@ -55,14 +57,25 @@ class TeamAnalyticsController:
         self.figure.patch.set_facecolor("#121214")
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setStyleSheet("background-color: transparent;")
+        
+        # FIX: Enforce minimum size to prevent squishing. This forces the QScrollArea 
+        # to activate its scrollbars instead of crushing the chart.
+        min_h = 1200 if self.team_name == "Summary" else 1000
+        self.canvas.setMinimumSize(1000, min_h)
+        
         self.scroll_area.setWidget(self.canvas)
 
-    # ── Auto-load ──────────────────────────────────────────────────────────────
+    # ── Auto-load (Lazy Loaded) ────────────────────────────────────────────────
 
     def auto_load_data(self):
+        # FIX: If already loaded during this session, do not recalculate/redraw
+        if self.is_loaded:
+            return
+
         if self.team_name == "Summary":
             try:
                 self.load_snapshots_from_db()
+                self.is_loaded = True
             except Exception as exc:
                 print(f"[ERROR] loading Summary: {exc}")
                 self.btn_export.setEnabled(False)
@@ -75,37 +88,30 @@ class TeamAnalyticsController:
         )
 
         pattern1 = os.path.join(folder, f"*Skilljar Metric*{self.team_name}*.csv")
-        pattern2 = os.path.join(
-            folder, "**", f"*Skilljar Metric*{self.team_name}*.csv"
-        )
+        pattern2 = os.path.join(folder, "**", f"*Skilljar Metric*{self.team_name}*.csv")
         files = list(set(glob.glob(pattern1) + glob.glob(pattern2, recursive=True)))
 
         if files:
-            # FIX: when multiple matching files exist, use the most recently
-            # modified one instead of an arbitrary list[0].
             if len(files) > 1:
                 files.sort(key=os.path.getmtime, reverse=True)
-                print(
-                    f"[WARN] Multiple metric files found for '{self.team_name}'; "
-                    f"using most recent: {files[0]}"
-                )
             try:
                 self.parse_csv_for_analytics(files[0])
                 self.populate_table()
                 self.draw_charts()
                 self.btn_export.setEnabled(True)
+                self.is_loaded = True
             except Exception as exc:
                 print(f"[ERROR] loading {self.team_name}: {exc}")
                 self.btn_export.setEnabled(False)
         else:
             self.btn_export.setEnabled(False)
             self.table.clearContents()
-            # FIX: properly close and recreate instead of just .clear()
             plt.close(self.figure)
             self.figure = plt.figure(figsize=(11, 12 if self.team_name != "Summary" else 15))
             self.figure.patch.set_facecolor("#121214")
             self.canvas.figure = self.figure
             self.canvas.draw()
+            self.is_loaded = True # Prevent infinite retries on empty directories
 
     # ── Snapshot loading ───────────────────────────────────────────────────────
 
@@ -125,8 +131,6 @@ class TeamAnalyticsController:
                 self._clear_summary_ui()
                 return
 
-            # FIX: include year in the SELECT and sort by (year, month) so
-            # data spanning multiple years is ordered correctly.
             cursor.execute(
                 """
                 SELECT month, year, team, published,
@@ -146,12 +150,12 @@ class TeamAnalyticsController:
             "May": 5, "Jun": 6, "Jul": 7, "Aug": 8,
             "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
         }
-        # Sort by year first, then month index
+        
         rows.sort(key=lambda x: (x[1], month_order.get(x[0], 99)))
 
         for row in rows:
             month, year, team, pub = row[0], row[1], row[2], row[3]
-            reg_vals = row[4:]  # taiwan, china, korea, japan, americas, europe, isea, worldwide
+            reg_vals = row[4:]
 
             if team not in self.summary_data:
                 self.summary_data[team] = {
@@ -160,7 +164,6 @@ class TeamAnalyticsController:
                     "regions":   {r: [] for r in self.regions},
                 }
 
-            # Display month+year label so the chart x-axis is unambiguous
             label = f"{month} {year}" if year else month
             self.summary_data[team]["months"].append(label)
             self.summary_data[team]["published"].append(int(pub) if pub else 0)
@@ -192,9 +195,6 @@ class TeamAnalyticsController:
         if not month:
             return
 
-        # Derive the year from the current system date so we never overwrite
-        # a prior-year snapshot with the same month name.
-        import datetime
         current_year = datetime.date.today().year
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -202,9 +202,7 @@ class TeamAnalyticsController:
             with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
 
-                cursor.execute(
-                    "SELECT course_id, control_code, course_type FROM courses"
-                )
+                cursor.execute("SELECT course_id, control_code, course_type FROM courses")
                 courses    = cursor.fetchall()
                 course_map = {str(r[0]): r[1] for r in courses}
 
@@ -218,7 +216,6 @@ class TeamAnalyticsController:
                 )
                 students = cursor.fetchall()
 
-                # FIX: filter completions to just FAE/Sales students
                 cursor.execute(
                     """
                     SELECT c.user_id, c.course_id, c.percent_complete
@@ -291,7 +288,6 @@ class TeamAnalyticsController:
                         for r_name in regions_db_map
                     }
 
-                    # FIX: REPLACE now includes the year column
                     cursor.execute(
                         """
                         REPLACE INTO monthly_snapshots
@@ -331,26 +327,17 @@ class TeamAnalyticsController:
         self.regions.clear()
         self.categories.clear()
 
-        # FIX: csv is now imported at the top of the module, not inside this
-        # function (avoids a dict lookup on every call).
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             rows = list(csv.reader(f))
 
         start_r, start_c = next(
-            (
-                (r, c)
-                for r, row in enumerate(rows)
-                for c, cell in enumerate(row)
-                if cell.strip() == "Category Team"
-            ),
+            ((r, c) for r, row in enumerate(rows) for c, cell in enumerate(row) if cell.strip() == "Category Team"),
             (-1, -1),
         )
         if start_r == -1:
             raise ValueError("Could not find 'Category Team' summary block.")
 
-        self.regions = [
-            x.strip() for x in rows[start_r][start_c + 1: start_c + 9]
-        ]
+        self.regions = [x.strip() for x in rows[start_r][start_c + 1: start_c + 9]]
         valid_cats = [
             "InnoSwitch", "LinkSwitch", "LYTSwitch", "Other",
             "Motor Driver", "Automotive", "High Power", "All Course",
@@ -361,8 +348,7 @@ class TeamAnalyticsController:
             if cat in valid_cats:
                 self.categories.append(cat)
                 self.analytics_data[cat] = [
-                    safe_float(v)
-                    for v in rows[r_idx][start_c + 1: start_c + 9]
+                    safe_float(v) for v in rows[r_idx][start_c + 1: start_c + 9]
                 ]
 
     # ── Table population ───────────────────────────────────────────────────────
@@ -383,16 +369,11 @@ class TeamAnalyticsController:
                     continue
                 for m_idx, month in enumerate(data["months"]):
                     pub = data["published"][m_idx]
-                    if pub > 0 or any(
-                        not np.isnan(data["regions"][r][m_idx])
-                        for r in self.regions
-                    ):
+                    if pub > 0 or any(not np.isnan(data["regions"][r][m_idx]) for r in self.regions):
                         row = (
                             [team, month, str(pub)]
                             + [
-                                f"{data['regions'][r][m_idx]:.2f}%"
-                                if not np.isnan(data["regions"][r][m_idx])
-                                else "-"
+                                f"{data['regions'][r][m_idx]:.2f}%" if not np.isnan(data["regions"][r][m_idx]) else "-"
                                 for r in self.regions
                             ]
                         )
@@ -429,7 +410,14 @@ class TeamAnalyticsController:
                         item_val.setForeground(Qt.gray)
                     self.table.setItem(r_idx, c_idx + 1, item_val)
 
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # FIX: Enforce minimum column widths to prevent squishing and enable horizontal scroll
+        self.table.horizontalHeader().setMinimumSectionSize(110)
+        if self.table.columnCount() > 0:
+            self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            for i in range(1, self.table.columnCount()):
+                self.table.horizontalHeader().setSectionResizeMode(i, QHeaderView.Interactive)
+                self.table.setColumnWidth(i, 110)
+
         self.table.setUpdatesEnabled(True)
 
     def get_bold_font(self, item):
@@ -440,7 +428,6 @@ class TeamAnalyticsController:
     # ── Chart drawing ──────────────────────────────────────────────────────────
 
     def draw_charts(self):
-        # FIX: close the old figure before recreating to prevent memory leak.
         plt.close(self.figure)
         fig_height   = 15 if self.team_name == "Summary" else 12
         self.figure  = plt.figure(figsize=(11, fig_height))
@@ -662,7 +649,6 @@ class TeamAnalyticsController:
                 )
             return
 
-        # ── Per-team export ────────────────────────────────────────────────────
         path, _ = QFileDialog.getSaveFileName(
             self.main_ui, "Export Analytics",
             f"{self.team_name}_Analytics_Export.xlsx", "Excel Files (*.xlsx)",
@@ -685,8 +671,6 @@ class TeamAnalyticsController:
                 data.append(row)
             df = pd.DataFrame(data)
 
-            # FIX: ExcelWriter is created inside try so it can always be
-            # closed in the finally block, even if chart rendering fails.
             writer = None
             try:
                 writer    = pd.ExcelWriter(path, engine="xlsxwriter")
@@ -702,7 +686,6 @@ class TeamAnalyticsController:
                 regions_no_ww = self.regions[:-1]
                 ww_idx        = self.regions.index("Worldwide")
 
-                # Chart 1 — regions as bars, Worldwide as line
                 fig1, ax1 = plt.subplots(figsize=(14, 6))
                 fig1.patch.set_facecolor("white")
                 fig1.patch.set_edgecolor(grid_col)
@@ -768,7 +751,6 @@ class TeamAnalyticsController:
                 img_data1.seek(0)
                 plt.close(fig1)
 
-                # Chart 2 — categories as bars
                 fig2, ax2 = plt.subplots(figsize=(14, 6))
                 fig2.patch.set_facecolor("white")
                 fig2.patch.set_edgecolor(grid_col)
@@ -831,14 +813,12 @@ class TeamAnalyticsController:
                     {"image_data": img_data2},
                 )
 
-                # FIX: BytesIO buffers explicitly closed
                 img_data1.close()
                 img_data2.close()
 
             except ImportError:
                 df.to_excel(path, index=False)
             finally:
-                # FIX: writer is always closed, even if chart rendering raised
                 if writer is not None:
                     try:
                         writer.close()
@@ -864,29 +844,61 @@ class TeamAnalyticsController:
 class AnalyticsTabComponent:
     def __init__(self, ui_window):
         self.ui       = ui_window
-        # FIX: dirty flag prevents redundant full reloads on every tab switch.
         self.data_dirty = True
         plt.style.use("dark_background")
 
         self.controllers = {
-            "FAE":     TeamAnalyticsController(
-                "FAE",     self.ui.table_fae,     self.ui.scroll_fae,
-                self.ui.btn_export_fae,     self.ui,
-            ),
-            "Sales":   TeamAnalyticsController(
-                "Sales",   self.ui.table_sales,   self.ui.scroll_sales,
-                self.ui.btn_export_sales,   self.ui,
-            ),
-            "Summary": TeamAnalyticsController(
-                "Summary", self.ui.table_summary, self.ui.scroll_summary,
-                self.ui.btn_export_summary, self.ui,
-            ),
+            0: TeamAnalyticsController("FAE", self.ui.table_fae, self.ui.scroll_fae, self.ui.btn_export_fae, self.ui),
+            1: TeamAnalyticsController("Sales", self.ui.table_sales, self.ui.scroll_sales, self.ui.btn_export_sales, self.ui),
+            2: TeamAnalyticsController("Summary", self.ui.table_summary, self.ui.scroll_summary, self.ui.btn_export_summary, self.ui)
         }
 
+        self.ui.tabWidget_analytics.tabBar().setExpanding(True)
+        
+        self.ui.tabWidget_analytics.currentChanged.connect(self.load_current_tab)
+        self.ui.tab_fae.tabBar().setExpanding(True)
+        self.ui.tab_sales.tabBar().setExpanding(True)
+        self.ui.tab_summary.tabBar().setExpanding(True)
+    
+
+        self.ui.tabWidget_analytics.setStyleSheet("""
+            QTabWidget#tabWidget_analytics  QTabBar::tab {
+                background: #202025;
+                color: #777777;
+                border: 1px solid #3a3a40;
+                padding: 8px 15px;
+                font-size: 14px;
+                min-height: 20px;
+            }
+            QTabWidget#tabWidget_analytics  QTabBar::tab:selected {
+                background: #0085ca;
+                color: white;
+                border: 1px solid #0085ca;
+                font-weight: bold;
+            }
+            QTabWidget#tabWidget_analytics  QTabBar::tab:hover:!selected {
+                background: #2a2a30;
+            }
+        """)
+
     def update_data(self):
-        for controller in self.controllers.values():
-            controller.auto_load_data()
-        self.data_dirty = False
+        # Called when the user switches to the Analytics Main Tab from elsewhere
+        if self.data_dirty:
+            for c in self.controllers.values():
+                c.is_loaded = False
+            self.data_dirty = False
+            
+        self.load_current_tab()
+
+    def load_current_tab(self):
+        # Only processes data and draws charts for the actively visible tab
+        idx = self.ui.tabWidget_analytics.currentIndex()
+        if idx in self.controllers:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                self.controllers[idx].auto_load_data()
+            finally:
+                QApplication.restoreOverrideCursor()
 
     def mark_dirty(self):
         """Call this whenever underlying data changes so next tab visit reloads."""
