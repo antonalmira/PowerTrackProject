@@ -3,7 +3,7 @@
  <class>CourseMappingDialog</class>
  <widget class="QDialog" name="CourseMappingDialog">
   <property name="geometry">
-   <rect><x>0</x><y>0</y><width>780</width><height>550</height></rect>
+   <rect><x>0</x><y>0</y><width>1000</width><height>700</height></rect>
   </property>
   <property name="windowTitle">
    <string>Map Courses to Control Codes</string>
@@ -12,67 +12,76 @@
    <string notr="true">
     QDialog { background: #202025; color: white; }
     QLabel { color: white; font-weight: bold; }
-    QTreeWidget, QListWidget { background: #121214; border: 1px solid #3a3a40; color: white; outline: none; }
+    QTreeWidget, QListWidget { background: #121214; border: 1px solid #3a3a40; color: white; outline: none; border-radius: 4px; padding: 4px;}
     QTreeWidget::item:selected, QListWidget::item:selected { background: #0085ca; }
-    QPushButton { padding: 8px; border-radius: 4px; font-weight: bold; }
-    QPushButton#btn_save { background: #0085ca; color: white; }
+    QTreeWidget::item:hover, QListWidget::item:hover { background: #2a2a30; }
+    QPushButton { padding: 10px; border-radius: 4px; font-weight: bold; }
+    QPushButton#btn_save { background: #0085ca; color: white; font-size: 14px;}
     QPushButton#btn_save:hover { background: #3c649f; }
-    QPushButton#btn_delete_course { background: #f08080; color: #121214; }
-    QPushButton#btn_delete_course:hover { background: #cd5c5c; }
+    
+    QScrollBar:vertical { background: #121214; width: 14px; margin: 0px 0px 0px 0px; border-left: 1px solid #3a3a40; }
+    QScrollBar::handle:vertical { background: #3a3a40; min-height: 20px; border-radius: 7px; margin: 2px; }
+    QScrollBar::handle:vertical:hover { background: #555555; }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+    
+    QScrollBar:horizontal { background: #121214; height: 14px; margin: 0px 0px 0px 0px; border-top: 1px solid #3a3a40; }
+    QScrollBar::handle:horizontal { background: #3a3a40; min-width: 20px; border-radius: 7px; margin: 2px; }
+    QScrollBar::handle:horizontal:hover { background: #555555; }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
    </string>
   </property>
-  <layout class="QHBoxLayout" name="horizontalLayout">
+  <layout class="QVBoxLayout" name="main_layout">
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout">
+     
+     <!-- LEFT SIDE: ASSIGNED COURSES TREE -->
+     <item>
+      <layout class="QVBoxLayout" name="left_layout">
+       <item>
+        <widget class="QLabel" name="lbl_tree">
+         <property name="text"><string>Assigned Courses:</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTreeWidget" name="tree_categories">
+         <property name="headerHidden"><bool>true</bool></property>
+         <property name="dragEnabled"><bool>true</bool></property>
+         <property name="acceptDrops"><bool>true</bool></property>
+         <property name="dragDropMode"><enum>QAbstractItemView::DragDrop</enum></property>
+         <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+         <column><property name="text"><string notr="true">1</string></property></column>
+        </widget>
+       </item>
+      </layout>
+     </item>
+
+     <!-- RIGHT SIDE: UNASSIGNED COURSES -->
+     <item>
+      <layout class="QVBoxLayout" name="right_layout">
+       <item>
+        <widget class="QLabel" name="lbl_list">
+         <property name="text"><string>Unassigned Courses:</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QListWidget" name="list_unassigned">
+         <property name="dragEnabled"><bool>true</bool></property>
+         <property name="acceptDrops"><bool>true</bool></property>
+         <property name="dragDropMode"><enum>QAbstractItemView::DragDrop</enum></property>
+         <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+        </widget>
+       </item>
+      </layout>
+     </item>
+
+    </layout>
+   </item>
    
-   <!-- LEFT SIDE: UNASSIGNED COURSES & DELETE BUTTON -->
    <item>
-    <layout class="QVBoxLayout" name="left_layout">
-     <item>
-      <widget class="QLabel" name="lbl_list">
-       <property name="text"><string>Unassigned Courses:</string></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QListWidget" name="list_unassigned">
-       <property name="dragEnabled"><bool>true</bool></property>
-       <property name="acceptDrops"><bool>true</bool></property>
-       <property name="dragDropMode"><enum>QAbstractItemView::DragDrop</enum></property>
-       <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btn_delete_course">
-       <property name="text"><string>Delete Selected Course(s)</string></property>
-      </widget>
-     </item>
-    </layout>
+    <widget class="QPushButton" name="btn_save">
+     <property name="text"><string>Save Changes</string></property>
+    </widget>
    </item>
-
-   <!-- RIGHT SIDE: ASSIGNED COURSES TREE & SAVE BUTTON -->
-   <item>
-    <layout class="QVBoxLayout" name="right_layout">
-     <item>
-      <widget class="QLabel" name="lbl_tree">
-       <property name="text"><string>Assigned Courses:</string></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QTreeWidget" name="tree_categories">
-       <property name="headerHidden"><bool>true</bool></property>
-       <property name="dragEnabled"><bool>true</bool></property>
-       <property name="acceptDrops"><bool>true</bool></property>
-       <property name="dragDropMode"><enum>QAbstractItemView::DragDrop</enum></property>
-       <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
-       <column><property name="text"><string notr="true">1</string></property></column>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="btn_save">
-       <property name="text"><string>Save Mapping</string></property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-
   </layout>
  </widget>
  <resources/>

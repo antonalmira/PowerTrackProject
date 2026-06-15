@@ -9,5 +9,7 @@ venv/
 # Ignore local datasets
 data/
 
+powertrack.db
+
 # Ignore previous repomix outputs
 repomix-output.xml

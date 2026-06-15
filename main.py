@@ -2,15 +2,31 @@ import sys
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5 import uic
 from PyQt5.QtCore import Qt, QPoint
-
+from PyQt5.QtGui import QFont
+import os
 from components.tab_students import StudentTabComponent
 from components.tab_matrix import MatrixTabComponent 
 from components.tab_analytics import AnalyticsTabComponent
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        uic.loadUi('design.ui', self)
+        uic.loadUi(resource_path('design.ui'), self)
+
+        # OVERRIDE CSS FONTS TO MAKE THEM BIGGER (Scaling up by ~35-40%)
+        current_style = self.styleSheet()
+        # Scale up the specific hard-coded sizes in the stylesheet
+        new_style = current_style.replace('font-size: 13px;', 'font-size: 18px;')
+        new_style = new_style.replace('font-size: 14px;', 'font-size: 19px;')
+        self.setStyleSheet(new_style)
 
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -73,6 +89,17 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    
+    # APPLY GLOBAL FONT SCALING ACROSS ALL LABELS, BUTTONS, DROPDOWNS
+    font = app.font()
+    current_size = font.pointSize()
+    if current_size <= 0:  # If Qt fails to detect it, assume standard 9pt
+        current_size = 9
+    
+    # Increase base font size by ~35%
+    font.setPointSize(int(current_size * 1.35))
+    app.setFont(font)
+    
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

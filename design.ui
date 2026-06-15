@@ -35,7 +35,7 @@
     QGroupBox { color: #f0f0f0; border: 1px solid #3a3a40; border-radius: 5px; margin-top: 10px; font-weight: bold; }
     QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 5px; }
     
-    /* Global TabWidget / TabBar (Forced explicit sizing for Analytics and Matrix sub-tabs) */
+    /* Global TabWidget / TabBar */
     QTabWidget::pane { border: none; background: transparent; }
     QTabBar { qproperty-expanding: 1; }
     QTabWidget::tab-bar { left: 0px; right: 0px; alignment: center; }
@@ -52,9 +52,11 @@
     QTabBar::tab:hover:!selected { background: #2a2a30; }
     
     /* Tables */
-    QTableWidget { alternate-background-color: #1a1a1e; background: #121214; color: #f0f0f0; border: 1px solid #3a3a40; border-radius: 5px; font-size: 13px; gridline-color: #3a3a40; }
+    QTableWidget, QTableView { alternate-background-color: #1a1a1e; background-color: #121214; color: #f0f0f0; border: 1px solid #3a3a40; border-radius: 5px; font-size: 13px; gridline-color: #3a3a40; }
+    QTableWidget::viewport, QTableView::viewport { background-color: #121214; }
+    QHeaderView { background-color: #121214; border: none; }
     QHeaderView::section { background-color: #202025; color: white; padding: 6px; border: 1px solid #3a3a40; font-weight: bold; font-size: 13px; }
-    QTableWidget::item:selected { background-color: #0085ca; color: white; }
+    QTableWidget::item:selected, QTableView::item:selected { background-color: #0085ca; color: white; }
     QTableCornerButton::section { background-color: #202025; border: 1px solid #3a3a40; }
     
     /* Matrix Headers specifically */
@@ -67,12 +69,16 @@
     #centralwidget QLabel { color: white; border: none; }
     
     /* Color Specific Buttons */
-    #btn_update_status { background: #ffaa00; color: #121214; }
-    #btn_update_status:hover { background: #cc8800; }
-    #btn_refresh, #btn_refresh_matrix { background: #87ceeb; color: #121214; }
-    #btn_refresh:hover, #btn_refresh_matrix:hover { background: #5bb2d4; }
+    #btn_import_monthly { background: #ffaa00; color: #121214; }
+    #btn_import_monthly:hover { background: #cc8800; }
+    #btn_refresh_matrix { background: #87ceeb; color: #121214; }
+    #btn_refresh_matrix:hover { background: #5bb2d4; }
     #btn_clear_filters, #btn_clear_matrix { background: #f08080; color: #121214; }
     #btn_clear_filters:hover, #btn_clear_matrix:hover { background: #cd5c5c; }
+    #btn_load_trend { background: #00B050; color: white; }
+    #btn_load_trend:hover { background: #008a3e; }
+    #btn_export_archive { background: #00B050; color: white; }
+    #btn_export_archive:hover { background: #008a3e; }
    </string>
   </property>
   <widget class="QWidget" name="centralwidget">
@@ -175,14 +181,15 @@
               </layout>
              </item>
              <item>
-              <widget class="QTableWidget" name="table_students">
+              <widget class="QTableView" name="table_students">
               </widget>
              </item>
              <item>
               <layout class="QHBoxLayout">
-               <item><widget class="QPushButton" name="btn_update_status"><property name="text"><string>Load Base Data</string></property></widget></item>
-               <item><widget class="QPushButton" name="btn_refresh"><property name="text"><string>Update Data</string></property></widget></item>
+               <item><widget class="QLabel" name="lbl_current_month"><property name="text"><string>Current Data View: None</string></property><property name="styleSheet"><string>color: #87ceeb; font-weight: bold; font-size: 18px; padding-left: 20px;</string></property></widget></item>
                <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+               <item><widget class="QPushButton" name="btn_import_monthly"><property name="text"><string>Import Monthly Data</string></property></widget></item>
+               <item><widget class="QPushButton" name="btn_export_archive"><property name="text"><string>Export Month Archive</string></property></widget></item>
               </layout>
              </item>
             </layout>
@@ -222,15 +229,13 @@
                  <property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAlwaysOff</enum></property>
                  <property name="focusPolicy"><enum>Qt::NoFocus</enum></property>
                  <property name="wordWrap"><bool>true</bool></property>
-                 <!-- FIX: Explicitly hide XML Horizontal Header to be safe -->
                  <attribute name="horizontalHeaderVisible">
                   <bool>false</bool>
                  </attribute>
                 </widget>
                </item>
                <item>
-                <widget class="QTableWidget" name="table_matrix">
-                 <!-- FIX: Explicitly hide XML Horizontal Header to be safe -->
+                <widget class="QTableView" name="table_matrix">
                  <attribute name="horizontalHeaderVisible">
                   <bool>false</bool>
                  </attribute>
@@ -335,44 +340,48 @@
                    <property name="documentMode">
                     <bool>true</bool>
                    </property>
-                   <widget class="QWidget" name="tab_summary_table">
-                    <attribute name="title"><string>Table</string></attribute>
+                   
+                   <widget class="QWidget" name="tab_summary_current_table">
+                    <attribute name="title"><string>Current Table</string></attribute>
                     <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
-                     <item><widget class="QTableWidget" name="table_summary"></widget></item>
+                     <item><widget class="QTableWidget" name="table_summary_current"></widget></item>
                     </layout>
                    </widget>
-                   <widget class="QWidget" name="tab_summary_charts">
-                    <attribute name="title"><string>Charts</string></attribute>
+
+                   <widget class="QWidget" name="tab_summary_current_charts">
+                    <attribute name="title"><string>Current Charts</string></attribute>
                     <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
-                     <item><widget class="QScrollArea" name="scroll_summary"><property name="widgetResizable"><bool>true</bool></property></widget></item>
+                     <item><widget class="QScrollArea" name="scroll_summary_current"><property name="widgetResizable"><bool>true</bool></property></widget></item>
                     </layout>
                    </widget>
+
+                   <widget class="QWidget" name="tab_summary_trend_table">
+                    <attribute name="title"><string>Trend Table</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QTableWidget" name="table_summary_trend"></widget></item>
+                    </layout>
+                   </widget>
+
+                   <widget class="QWidget" name="tab_summary_trend_charts">
+                    <attribute name="title"><string>Trend Charts</string></attribute>
+                    <layout class="QVBoxLayout"><property name="margin"><number>0</number></property>
+                     <item><widget class="QScrollArea" name="scroll_summary_trend"><property name="widgetResizable"><bool>true</bool></property></widget></item>
+                    </layout>
+                   </widget>
+
                   </widget>
                  </item>
                  <item>
                   <layout class="QHBoxLayout">
-                   <item><widget class="QComboBox" name="combo_snapshot_month">
-                     <property name="minimumHeight"><number>35</number></property>
-                     <item><property name="text"><string>Jan</string></property></item>
-                     <item><property name="text"><string>Feb</string></property></item>
-                     <item><property name="text"><string>Mar</string></property></item>
-                     <item><property name="text"><string>Apr</string></property></item>
-                     <item><property name="text"><string>May</string></property></item>
-                     <item><property name="text"><string>Jun</string></property></item>
-                     <item><property name="text"><string>Jul</string></property></item>
-                     <item><property name="text"><string>Aug</string></property></item>
-                     <item><property name="text"><string>Sep</string></property></item>
-                     <item><property name="text"><string>Oct</string></property></item>
-                     <item><property name="text"><string>Nov</string></property></item>
-                     <item><property name="text"><string>Dec</string></property></item>
-                   </widget></item>
-                   <item><widget class="QPushButton" name="btn_save_snapshot">
-                     <property name="text"><string>Save Month Snapshot</string></property>
-                     <property name="minimumHeight"><number>35</number></property>
-                     <property name="styleSheet"><string>background: #00B050; color: white;</string></property>
-                   </widget></item>
                    <item><spacer><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
-                   <item><widget class="QPushButton" name="btn_export_summary"><property name="text"><string>Export History</string></property><property name="minimumHeight"><number>35</number></property></widget></item>
+                   <item><widget class="QPushButton" name="btn_load_trend">
+                     <property name="text"><string>Load Summary Folder</string></property>
+                     <property name="minimumHeight"><number>35</number></property>
+                   </widget></item>
+                   <item><widget class="QPushButton" name="btn_export_current_summary">
+                     <property name="text"><string>Export Current Month</string></property>
+                     <property name="minimumHeight"><number>35</number></property>
+                   </widget></item>
                   </layout>
                  </item>
                 </layout>

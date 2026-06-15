@@ -1,7 +1,13 @@
 import sqlite3
 import os
+import sys
+import json
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 DB_PATH = os.path.join(BASE_DIR, "powertrack.db")
 
 
@@ -46,7 +52,6 @@ def setup_database():
             )
         ''')
 
-        # FIX: percent_complete declared as REAL (was incorrectly INTEGER)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS completions (
                 user_id          TEXT,
@@ -61,8 +66,6 @@ def setup_database():
             )
         ''')
 
-        # FIX: monthly_snapshots now includes a year column so data spanning
-        # multiple years doesn't overwrite itself, and charts sort correctly.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS monthly_snapshots (
                 month     TEXT,
@@ -81,8 +84,26 @@ def setup_database():
             )
         ''')
 
+        # ── Settings table for dynamic configurations ──────────────────────────
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+
+        cursor.execute("SELECT 1 FROM app_settings WHERE key='category_tree'")
+        if not cursor.fetchone():
+            default_tree = {
+                "Low & Mid Power": ["InnoSwitch", "LinkSwitch", "LYTSwitch", "Other"],
+                "High Power":      ["High Power"],
+                "Automotive":      ["Automotive"],
+                "Motor Driver":    ["Motor Driver"]
+            }
+            cursor.execute("INSERT INTO app_settings (key, value) VALUES ('category_tree', ?)", (json.dumps(default_tree),))
+
+
         # ── Schema-migration table (versioned) ─────────────────────────────────
-        # Each migration runs exactly once.  Add new entries at the bottom.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 id         INTEGER PRIMARY KEY,
@@ -103,7 +124,6 @@ def setup_database():
                         "INSERT INTO schema_migrations (id) VALUES (?)", (mid,)
                     )
                 except sqlite3.OperationalError as exc:
-                    # Re-raise anything that isn't "column already exists"
                     if "duplicate column" not in str(exc).lower():
                         raise
 
@@ -112,21 +132,45 @@ def setup_database():
         run(3, "ALTER TABLE courses  ADD COLUMN control_code  TEXT DEFAULT 'Unassigned'")
         run(4, "ALTER TABLE courses  ADD COLUMN graph_category TEXT DEFAULT 'Unassigned'")
         run(5, "ALTER TABLE monthly_snapshots ADD COLUMN year INTEGER DEFAULT 2025")
+        
+        run(6, '''
+            CREATE TABLE IF NOT EXISTS completions_history (
+                user_id          TEXT,
+                course_id        TEXT,
+                year             INTEGER,
+                month            INTEGER,
+                percent_complete REAL,
+                PRIMARY KEY (user_id, course_id, year, month)
+            )
+        ''')
+        
+        # Org-Isolated Course Mappings and Sort Orders
+        run(7, "ALTER TABLE courses ADD COLUMN fae_control_code TEXT DEFAULT 'Unassigned'")
+        run(8, "ALTER TABLE courses ADD COLUMN fae_graph_category TEXT DEFAULT 'Unassigned'")
+        run(9, "ALTER TABLE courses ADD COLUMN fae_sort_order INTEGER DEFAULT 999")
+        
+        run(10, "ALTER TABLE courses ADD COLUMN sales_control_code TEXT DEFAULT 'Unassigned'")
+        run(11, "ALTER TABLE courses ADD COLUMN sales_graph_category TEXT DEFAULT 'Unassigned'")
+        run(12, "ALTER TABLE courses ADD COLUMN sales_sort_order INTEGER DEFAULT 999")
+        
+        run(13, "ALTER TABLE courses ADD COLUMN unknown_control_code TEXT DEFAULT 'Unassigned'")
+        run(14, "ALTER TABLE courses ADD COLUMN unknown_graph_category TEXT DEFAULT 'Unassigned'")
+        run(15, "ALTER TABLE courses ADD COLUMN unknown_sort_order INTEGER DEFAULT 999")
+        
+        # Backfill existing data safely
+        run(16, """
+            UPDATE courses SET 
+                fae_control_code = control_code, fae_graph_category = graph_category,
+                sales_control_code = control_code, sales_graph_category = graph_category,
+                unknown_control_code = control_code, unknown_graph_category = graph_category
+            WHERE fae_control_code = 'Unassigned' AND control_code != 'Unassigned'
+        """)
 
         # ── Indexes ────────────────────────────────────────────────────────────
-        # FIX: without these, every import loop runs a full-table scan per row.
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_completions_user   ON completions (user_id)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_completions_course ON completions (course_id)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_students_email ON students (email)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_students_org   ON students (organization)"
-        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_completions_user   ON completions (user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_completions_course ON completions (course_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_email ON students (email)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_org   ON students (organization)")
 
 
 setup_database()
